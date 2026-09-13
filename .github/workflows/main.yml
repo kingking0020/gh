@@ -185,7 +185,7 @@ jobs:
               "--no-default-browser-check"
               "--disable-features=WelcomeToChrome"
               "--start-maximized"
-              "https://github.com"
+              "https://agentchain.noesisai.it/faucet?utm_source=chatgpt.com"
           )
 
           Write-Host "Launching Chrome..."
