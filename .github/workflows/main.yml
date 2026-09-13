@@ -6,7 +6,7 @@ on:
 jobs:
   rdp-session:
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
 
@@ -17,10 +17,6 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
-
-          Write-Host "============================================"
-          Write-Host "Configuring RDP"
-          Write-Host "============================================"
 
           Set-ItemProperty `
             -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
@@ -38,21 +34,15 @@ jobs:
             -ErrorAction SilentlyContinue
 
           if ($user) {
-              Write-Host "runneradmin already exists."
               net user runneradmin $password
           }
           else {
-              Write-Host "Creating runneradmin..."
               net user runneradmin $password /add
           }
 
           $admins = net localgroup Administrators
 
-          if ($admins -match "runneradmin") {
-              Write-Host "runneradmin is already an Administrator."
-          }
-          else {
-              Write-Host "Adding runneradmin to Administrators..."
+          if ($admins -notmatch "runneradmin") {
               net localgroup Administrators runneradmin /add
           }
 
@@ -62,9 +52,6 @@ jobs:
           "RDP_PASS=$password" |
             Out-File $env:GITHUB_ENV -Append
 
-          Write-Host "RDP configuration completed."
-
-
       # ============================================================
       # 2. INSTALL GOOGLE CHROME
       # ============================================================
@@ -73,32 +60,16 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          Write-Host "============================================"
-          Write-Host "Checking Google Chrome"
-          Write-Host "============================================"
-
           $chrome64 = "${env:ProgramFiles}\Google\Chrome\Application\chrome.exe"
           $chrome32 = "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe"
 
           if (Test-Path $chrome64) {
-
               $chrome = $chrome64
-
-              Write-Host "Chrome found:"
-              Write-Host $chrome
           }
           elseif (Test-Path $chrome32) {
-
               $chrome = $chrome32
-
-              Write-Host "Chrome found:"
-              Write-Host $chrome
           }
           else {
-
-              Write-Host "Chrome not found."
-              Write-Host "Downloading Chrome..."
-
               $installer = "$env:TEMP\chrome_installer.exe"
 
               Invoke-WebRequest `
@@ -132,9 +103,6 @@ jobs:
           "CHROME_PATH=$chrome" |
             Out-File $env:GITHUB_ENV -Append
 
-          Write-Host "Chrome ready."
-
-
       # ============================================================
       # 3. CREATE CHROME SCRIPT
       # ============================================================
@@ -143,15 +111,9 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          Write-Host "============================================"
-          Write-Host "Creating Chrome startup script"
-          Write-Host "============================================"
-
-          $tempDir = "C:\temp"
-
           New-Item `
             -ItemType Directory `
-            -Path $tempDir `
+            -Path "C:\temp" `
             -Force |
             Out-Null
 
@@ -160,10 +122,7 @@ jobs:
           $chromeScript = @'
           Write-Host "Chrome task started."
 
-          # Give the RDP desktop time to initialize
           Start-Sleep -Seconds 5
-
-          Write-Host "Starting Chrome..."
 
           $chrome = "C:\Program Files\Google\Chrome\Application\chrome.exe"
 
@@ -172,23 +131,16 @@ jobs:
           }
 
           if (-not (Test-Path $chrome)) {
-              Write-Host "Chrome executable not found."
               exit 1
           }
 
-          Write-Host "Chrome executable:"
-          Write-Host $chrome
-
-          # Chrome first-run bypass
           $chromeArguments = @(
               "--no-first-run"
               "--no-default-browser-check"
               "--disable-features=WelcomeToChrome"
               "--start-maximized"
-              "https://agentchain.noesisai.it/faucet?utm_source=chatgpt.com"
+              "https://github.com"
           )
-
-          Write-Host "Launching Chrome..."
 
           Start-Process `
             -FilePath $chrome `
@@ -202,50 +154,25 @@ jobs:
             -Value $chromeScript `
             -Encoding UTF8
 
-          Write-Host "Chrome script created:"
-          Write-Host $scriptPath
-
-
       # ============================================================
-      # 4. CREATE SCHEDULED TASK
+      # 4. CREATE CHROME SCHEDULED TASK
       # ============================================================
       - name: Create Chrome Scheduled Task
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          Write-Host "============================================"
-          Write-Host "Creating Chrome Scheduled Task"
-          Write-Host "============================================"
-
           $taskName = "OpenChromeAutomatically"
-
-          Write-Host "Checking existing task..."
 
           cmd.exe /c "schtasks /query /tn `"$taskName`" >nul 2>&1"
 
-          $queryExitCode = $LASTEXITCODE
-
-          if ($queryExitCode -eq 0) {
-
-              Write-Host "Existing task found."
-              Write-Host "Deleting existing task..."
-
+          if ($LASTEXITCODE -eq 0) {
               cmd.exe /c "schtasks /delete /tn `"$taskName`" /f >nul 2>&1"
 
-              $deleteExitCode = $LASTEXITCODE
-
-              if ($deleteExitCode -ne 0) {
+              if ($LASTEXITCODE -ne 0) {
                   throw "Failed to delete existing Chrome task."
               }
-
-              Write-Host "Existing task deleted."
           }
-          else {
-              Write-Host "No existing Chrome task found."
-          }
-
-          Write-Host "Creating new task..."
 
           $createArguments = @(
               "/create"
@@ -265,29 +192,18 @@ jobs:
 
           & schtasks.exe @createArguments
 
-          $createExitCode = $LASTEXITCODE
-
-          if ($createExitCode -ne 0) {
-              throw "Failed to create Chrome scheduled task. Exit code: $createExitCode"
+          if ($LASTEXITCODE -ne 0) {
+              throw "Failed to create Chrome scheduled task."
           }
-
-          Write-Host "Chrome task created."
-
-          Write-Host "Verifying task..."
 
           & schtasks.exe `
             /query `
             /tn $taskName `
             /fo LIST
 
-          $verifyExitCode = $LASTEXITCODE
-
-          if ($verifyExitCode -ne 0) {
+          if ($LASTEXITCODE -ne 0) {
               throw "Chrome task verification failed."
           }
-
-          Write-Host "Chrome task verified."
-
 
       # ============================================================
       # 5. INSTALL + CONNECT TAILSCALE
@@ -298,10 +214,6 @@ jobs:
           TS_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
           $ErrorActionPreference = "Stop"
-
-          Write-Host "============================================"
-          Write-Host "Installing Tailscale"
-          Write-Host "============================================"
 
           $installer = "$env:TEMP\tailscale-setup.exe"
 
@@ -325,8 +237,6 @@ jobs:
               throw "TAILSCALE_AUTH_KEY is missing."
           }
 
-          Write-Host "Connecting Tailscale..."
-
           $log = "$env:TEMP\tailscale.log"
 
           & $tailscale up `
@@ -345,8 +255,6 @@ jobs:
               throw "Tailscale authentication failed."
           }
 
-          Write-Host "Tailscale connected."
-
           $ip = $null
 
           for ($i = 1; $i -le 20; $i++) {
@@ -356,8 +264,6 @@ jobs:
               if ($ip) {
                   break
               }
-
-              Write-Host "Waiting for Tailscale IP..."
 
               Start-Sleep -Seconds 3
           }
@@ -369,10 +275,8 @@ jobs:
           "TAILSCALE_IP=$ip" |
             Out-File $env:GITHUB_ENV -Append
 
-          Write-Host ""
           Write-Host "Tailscale IP:"
           Write-Host $ip
-
 
       # ============================================================
       # 6. PREPARE RDP LOGIN
@@ -381,10 +285,6 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
-
-          Write-Host "============================================"
-          Write-Host "Preparing RDP credentials"
-          Write-Host "============================================"
 
           cmdkey `
             /generic:TERMSRV/127.0.0.1 `
@@ -404,26 +304,17 @@ jobs:
               throw "Failed to store localhost RDP credentials."
           }
 
-          Write-Host "RDP credentials prepared."
-
-
       # ============================================================
-      # 7. START RDP
+      # 7. START RDP - NO FIXED RESOLUTION
       # ============================================================
       - name: Start Automatic RDP Session
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          Write-Host ""
-          Write-Host "============================================"
-          Write-Host "STARTING AUTOMATIC RDP SESSION"
-          Write-Host "============================================"
-
           $regPath = "HKCU:\Software\Microsoft\Terminal Server Client"
 
           if (!(Test-Path $regPath)) {
-
               New-Item `
                 -Path $regPath `
                 -Force |
@@ -443,8 +334,6 @@ jobs:
               throw "mstsc.exe not found."
           }
 
-          Write-Host "Starting RDP client..."
-
           $process = Start-Process `
             -FilePath $mstsc `
             -ArgumentList "/v:127.0.0.1 /f" `
@@ -453,21 +342,13 @@ jobs:
           Write-Host "RDP client started."
           Write-Host "PID: $($process.Id)"
 
-          # ========================================================
-          # WAIT 100 SECONDS FOR RDP DESKTOP
-          # ========================================================
-
-          Write-Host ""
           Write-Host "Waiting 100 seconds for RDP desktop..."
+
           Start-Sleep -Seconds 100
 
           Write-Host ""
           Write-Host "Current sessions:"
           quser
-
-          Write-Host ""
-          Write-Host "RDP wait completed."
-
 
       # ============================================================
       # 8. LAUNCH CHROME
@@ -477,16 +358,8 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          Write-Host ""
-          Write-Host "============================================"
-          Write-Host "LAUNCHING CHROME"
-          Write-Host "============================================"
-
           Write-Host "Current sessions:"
           quser
-
-          Write-Host ""
-          Write-Host "Starting Chrome scheduled task..."
 
           & schtasks.exe `
             /run `
@@ -495,11 +368,10 @@ jobs:
           $exitCode = $LASTEXITCODE
 
           if ($exitCode -ne 0) {
-              throw "Could not start Chrome scheduled task. Exit code: $exitCode"
+              throw "Could not start Chrome scheduled task."
           }
 
           Write-Host "Chrome scheduled task started."
-
 
       # ============================================================
       # 9. WAIT FOR CHROME
@@ -508,11 +380,6 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
-
-          Write-Host ""
-          Write-Host "============================================"
-          Write-Host "WAITING FOR CHROME"
-          Write-Host "============================================"
 
           $found = $false
 
@@ -523,10 +390,7 @@ jobs:
                 -ErrorAction SilentlyContinue
 
               if ($chrome) {
-
-                  Write-Host ""
                   Write-Host "Chrome process detected."
-
                   $found = $true
                   break
               }
@@ -540,52 +404,284 @@ jobs:
               throw "Chrome was not detected after 120 seconds."
           }
 
-          Write-Host "Chrome is running."
-
-
       # ============================================================
-      # 10. WAIT 100 SECONDS FOR WEBSITE
+      # 10. WAIT FOR WEBSITE
       # ============================================================
       - name: Wait 100 Seconds For Website
         shell: powershell
         run: |
-          Write-Host ""
-          Write-Host "============================================"
-          Write-Host "WAITING FOR WEBSITE"
-          Write-Host "============================================"
-
           Write-Host "Waiting 100 seconds for Chrome and website..."
 
           Start-Sleep -Seconds 100
 
-          Write-Host "Website wait completed."
-
-
       # ============================================================
-      # 11. TAKE SCREENSHOT
+      # 11. INSTALL FFMPEG
       # ============================================================
-      - name: Take Screenshot
+      - name: Install FFmpeg
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          Write-Host ""
-          Write-Host "============================================"
-          Write-Host "TAKING SCREENSHOT"
-          Write-Host "============================================"
+          $ffmpegDir = "C:\ffmpeg"
+          $zipPath = "$env:TEMP\ffmpeg.zip"
+
+          $downloadUrl = `
+            "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+
+          if (-not (Test-Path "$ffmpegDir\bin\ffmpeg.exe")) {
+
+              Invoke-WebRequest `
+                -Uri $downloadUrl `
+                -OutFile $zipPath
+
+              $extractDir = "$env:TEMP\ffmpeg_extract"
+
+              if (Test-Path $extractDir) {
+                  Remove-Item `
+                    $extractDir `
+                    -Recurse `
+                    -Force
+              }
+
+              Expand-Archive `
+                -Path $zipPath `
+                -DestinationPath $extractDir `
+                -Force
+
+              $ffmpegExe = Get-ChildItem `
+                -Path $extractDir `
+                -Filter "ffmpeg.exe" `
+                -Recurse |
+                Select-Object -First 1
+
+              if (-not $ffmpegExe) {
+                  throw "ffmpeg.exe was not found."
+              }
+
+              New-Item `
+                -ItemType Directory `
+                -Path "$ffmpegDir\bin" `
+                -Force |
+                Out-Null
+
+              Copy-Item `
+                -Path "$($ffmpegExe.Directory.FullName)\*" `
+                -Destination "$ffmpegDir\bin" `
+                -Recurse `
+                -Force
+
+              Remove-Item `
+                $zipPath `
+                -Force `
+                -ErrorAction SilentlyContinue
+
+              Remove-Item `
+                $extractDir `
+                -Recurse `
+                -Force `
+                -ErrorAction SilentlyContinue
+          }
+
+          $ffmpeg = "$ffmpegDir\bin\ffmpeg.exe"
+
+          if (-not (Test-Path $ffmpeg)) {
+              throw "FFmpeg installation failed."
+          }
+
+          & $ffmpeg -version |
+            Select-Object -First 1
+
+      # ============================================================
+      # 12. CREATE CLICK + RECORD SCRIPT
+      # ============================================================
+      - name: Create Click And Record Script
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $scriptPath = "C:\temp\ClickAndRecord.ps1"
+
+          $script = @'
+          $ErrorActionPreference = "Stop"
 
           Add-Type -AssemblyName System.Windows.Forms
           Add-Type -AssemblyName System.Drawing
 
-          $output = "$env:GITHUB_WORKSPACE\rdp-screenshot.png"
+          Add-Type @"
+          using System;
+          using System.Runtime.InteropServices;
+
+          public class MouseAPI
+          {
+              [DllImport("user32.dll")]
+              public static extern bool SetCursorPos(int X, int Y);
+
+              [DllImport("user32.dll")]
+              public static extern void mouse_event(
+                  uint dwFlags,
+                  uint dx,
+                  uint dy,
+                  uint dwData,
+                  UIntPtr dwExtraInfo
+              );
+
+              public const uint LEFTDOWN = 0x0002;
+              public const uint LEFTUP   = 0x0004;
+          }
+          "@
+
+          # ========================================================
+          # SETTINGS
+          # ========================================================
+
+          $x = 84
+          $y = 614
+
+          $preSeconds  = 5
+          $postSeconds = 10
+
+          $ffmpeg = "C:\ffmpeg\bin\ffmpeg.exe"
+
+          $videoOutput = "C:\temp\rdp-click-video.mp4"
+          $screenshotOutput = "C:\temp\rdp-click-screenshot.png"
+
+          Write-Host "============================================"
+          Write-Host "CLICK + RECORD"
+          Write-Host "============================================"
+
+          Write-Host "Click X      : $x"
+          Write-Host "Click Y      : $y"
+          Write-Host "Before click : $preSeconds seconds"
+          Write-Host "After click  : $postSeconds seconds"
+          Write-Host "Total video  : 15 seconds"
+          Write-Host "Resolution   : NOT FORCED"
+          Write-Host ""
+
+          # ========================================================
+          # ACTUAL DESKTOP SIZE
+          # ========================================================
 
           $screen = [System.Windows.Forms.SystemInformation]::VirtualScreen
 
-          Write-Host "Screen:"
+          Write-Host "Actual Desktop:"
           Write-Host "Left   : $($screen.Left)"
           Write-Host "Top    : $($screen.Top)"
           Write-Host "Width  : $($screen.Width)"
           Write-Host "Height : $($screen.Height)"
+          Write-Host ""
+
+          # ========================================================
+          # VERY SMALL RED DOT
+          # ========================================================
+
+          $form = New-Object System.Windows.Forms.Form
+
+          $form.FormBorderStyle = "None"
+          $form.StartPosition = "Manual"
+          $form.ShowInTaskbar = $false
+          $form.TopMost = $true
+
+          $form.BackColor = [System.Drawing.Color]::Red
+
+          $form.Width = 10
+          $form.Height = 10
+
+          $form.Left = $x - 5
+          $form.Top = $y - 5
+
+          $form.Show()
+          $form.Refresh()
+
+          # ========================================================
+          # START FFmpeg
+          # ========================================================
+
+          Write-Host "Starting FFmpeg..."
+
+          $arguments = @(
+              "-y"
+              "-f"
+              "gdigrab"
+              "-framerate"
+              "10"
+              "-draw_mouse"
+              "1"
+              "-i"
+              "desktop"
+              "-t"
+              "15"
+              "-c:v"
+              "libx264"
+              "-preset"
+              "ultrafast"
+              "-pix_fmt"
+              "yuv420p"
+              "-movflags"
+              "+faststart"
+              $videoOutput
+          )
+
+          $ffmpegProcess = Start-Process `
+            -FilePath $ffmpeg `
+            -ArgumentList $arguments `
+            -PassThru `
+            -NoNewWindow
+
+          Write-Host "FFmpeg PID: $($ffmpegProcess.Id)"
+
+          # ========================================================
+          # 5 SECONDS BEFORE CLICK
+          # ========================================================
+
+          Write-Host "Recording 5 seconds before click..."
+
+          Start-Sleep -Seconds 5
+
+          # ========================================================
+          # MOVE MOUSE
+          # ========================================================
+
+          Write-Host "Moving mouse to X=$x Y=$y"
+
+          [MouseAPI]::SetCursorPos($x, $y)
+
+          Start-Sleep -Milliseconds 300
+
+          # ========================================================
+          # REAL CLICK
+          # ========================================================
+
+          Write-Host "CLICKING X=$x Y=$y"
+
+          [MouseAPI]::mouse_event(
+              [MouseAPI]::LEFTDOWN,
+              0,
+              0,
+              0,
+              [UIntPtr]::Zero
+          )
+
+          Start-Sleep -Milliseconds 100
+
+          [MouseAPI]::mouse_event(
+              [MouseAPI]::LEFTUP,
+              0,
+              0,
+              0,
+              [UIntPtr]::Zero
+          )
+
+          Write-Host "CLICK COMPLETED."
+
+          # ========================================================
+          # SCREENSHOT AFTER CLICK
+          # ========================================================
+
+          Start-Sleep -Milliseconds 500
+
+          Write-Host "Taking screenshot..."
+
+          $screen = [System.Windows.Forms.SystemInformation]::VirtualScreen
 
           $bitmap = New-Object `
             System.Drawing.Bitmap `
@@ -595,49 +691,246 @@ jobs:
           $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
 
           $graphics.CopyFromScreen(
-            $screen.Left,
-            $screen.Top,
-            0,
-            0,
-            $screen.Size
+              $screen.Left,
+              $screen.Top,
+              0,
+              0,
+              $screen.Size
           )
 
           $bitmap.Save(
-            $output,
-            [System.Drawing.Imaging.ImageFormat]::Png
+              $screenshotOutput,
+              [System.Drawing.Imaging.ImageFormat]::Png
           )
 
           $graphics.Dispose()
           $bitmap.Dispose()
 
-          if (-not (Test-Path $output)) {
-              throw "Screenshot was not created."
+          Write-Host "Screenshot created:"
+          Write-Host $screenshotOutput
+
+          # ========================================================
+          # 10 SECONDS AFTER CLICK
+          # ========================================================
+
+          Write-Host "Recording 10 seconds after click..."
+
+          Start-Sleep -Seconds 10
+
+          # ========================================================
+          # WAIT FOR FFMPEG
+          # ========================================================
+
+          Write-Host "Waiting for FFmpeg..."
+
+          $ffmpegProcess.WaitForExit()
+
+          if ($ffmpegProcess.ExitCode -ne 0) {
+              throw "FFmpeg failed. Exit code: $($ffmpegProcess.ExitCode)"
           }
 
-          $size = (Get-Item $output).Length
+          # ========================================================
+          # CLOSE RED DOT
+          # ========================================================
+
+          $form.Close()
+          $form.Dispose()
 
           Write-Host ""
-          Write-Host "Screenshot created successfully."
-          Write-Host "Path: $output"
-          Write-Host "Size: $size bytes"
+          Write-Host "============================================"
+          Write-Host "CLICK + RECORD COMPLETED"
+          Write-Host "============================================"
 
+          if (-not (Test-Path $videoOutput)) {
+              throw "Video file was not created."
+          }
+
+          if (-not (Test-Path $screenshotOutput)) {
+              throw "Screenshot file was not created."
+          }
+
+          Write-Host "Video:"
+          Write-Host $videoOutput
+
+          Write-Host "Screenshot:"
+          Write-Host $screenshotOutput
+
+          Write-Host "Video size:"
+          Write-Host (Get-Item $videoOutput).Length
+
+          Write-Host "Screenshot size:"
+          Write-Host (Get-Item $screenshotOutput).Length
+
+          '@
+
+          Set-Content `
+            -Path $scriptPath `
+            -Value $script `
+            -Encoding UTF8
+
+          Write-Host "Click recording script created."
 
       # ============================================================
-      # 12. UPLOAD SCREENSHOT
+      # 13. CREATE RECORDING SCHEDULED TASK
+      # ============================================================
+      - name: Create Recording Scheduled Task
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $taskName = "RDPClickAndRecord"
+
+          cmd.exe /c "schtasks /query /tn `"$taskName`" >nul 2>&1"
+
+          if ($LASTEXITCODE -eq 0) {
+
+              cmd.exe /c "schtasks /delete /tn `"$taskName`" /f >nul 2>&1"
+
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Failed to delete old recording task."
+              }
+          }
+
+          $createArguments = @(
+              "/create"
+              "/tn"
+              $taskName
+              "/tr"
+              'powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\temp\ClickAndRecord.ps1'
+              "/sc"
+              "ONCE"
+              "/st"
+              "00:00"
+              "/sd"
+              "01/01/2030"
+              "/ru"
+              "runneradmin"
+              "/rp"
+              "WindowsRDP#2025"
+              "/it"
+              "/f"
+          )
+
+          & schtasks.exe @createArguments
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Failed to create recording task."
+          }
+
+      # ============================================================
+      # 14. START CLICK + RECORDING
+      # ============================================================
+      - name: Start Click And Recording
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================"
+          Write-Host "STARTING CLICK + RECORDING"
+          Write-Host "============================================"
+
+          & schtasks.exe `
+            /run `
+            /tn "RDPClickAndRecord"
+
+          $exitCode = $LASTEXITCODE
+
+          if ($exitCode -ne 0) {
+              throw "Could not start recording task. Exit code: $exitCode"
+          }
+
+          Write-Host ""
+          Write-Host "Recording started."
+          Write-Host "0s  = recording starts"
+          Write-Host "5s  = click X=84 Y=614"
+          Write-Host "5.5s = screenshot"
+          Write-Host "15s = recording ends"
+
+      # ============================================================
+      # 15. WAIT FOR RECORDING
+      # ============================================================
+      - name: Wait For Recording Completion
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $video = "C:\temp\rdp-click-video.mp4"
+          $screenshot = "C:\temp\rdp-click-screenshot.png"
+
+          $finished = $false
+
+          for ($i = 1; $i -le 60; $i++) {
+
+              $videoExists = Test-Path $video
+              $screenshotExists = Test-Path $screenshot
+
+              if ($videoExists -and $screenshotExists) {
+
+                  $size = (Get-Item $video).Length
+
+                  if ($size -gt 10000) {
+                      $finished = $true
+                      break
+                  }
+              }
+
+              Write-Host "Waiting... $i / 60"
+
+              Start-Sleep -Seconds 1
+          }
+
+          if (-not $finished) {
+              throw "Recording did not finish within expected time."
+          }
+
+          Write-Host "Recording completed."
+
+      # ============================================================
+      # 16. COPY FILES
+      # ============================================================
+      - name: Copy Recording Files
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Copy-Item `
+            "C:\temp\rdp-click-video.mp4" `
+            "$env:GITHUB_WORKSPACE\rdp-click-video.mp4" `
+            -Force
+
+          Copy-Item `
+            "C:\temp\rdp-click-screenshot.png" `
+            "$env:GITHUB_WORKSPACE\rdp-click-screenshot.png" `
+            -Force
+
+          Write-Host "Files copied."
+
+      # ============================================================
+      # 17. UPLOAD SCREENSHOT
       # ============================================================
       - name: Upload Screenshot Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: rdp-screenshot
-          path: ${{ github.workspace }}/rdp-screenshot.png
+          name: rdp-click-screenshot
+          path: ${{ github.workspace }}/rdp-click-screenshot.png
           if-no-files-found: error
           retention-days: 1
 
+      # ============================================================
+      # 18. UPLOAD VIDEO
+      # ============================================================
+      - name: Upload Click Recording Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rdp-click-video
+          path: ${{ github.workspace }}/rdp-click-video.mp4
+          if-no-files-found: error
+          retention-days: 1
 
       # ============================================================
-      # 13. FINAL INFORMATION
+      # 19. FINAL INFORMATION
       # ============================================================
-      - name: Display RDP Information
+      - name: Display Final Information
         shell: powershell
         run: |
           Write-Host ""
@@ -647,15 +940,26 @@ jobs:
           Write-Host ""
           Write-Host "Tailscale IP : $env:TAILSCALE_IP"
           Write-Host "Username     : $env:RDP_USER"
-          Write-Host "Chrome       : OPENED AUTOMATICALLY"
-          Write-Host "Website      : https://github.com"
-          Write-Host "First Run    : BYPASSED"
-          Write-Host "RDP Wait     : 100 seconds"
-          Write-Host "Website Wait : 100 seconds"
-          Write-Host "Screenshot   : rdp-screenshot.png"
-          Write-Host "Artifact     : rdp-screenshot"
+          Write-Host ""
+          Write-Host "Resolution   : NOT FORCED"
+          Write-Host "RDP Mode     : FULL SCREEN"
+          Write-Host ""
+          Write-Host "Click X      : 84"
+          Write-Host "Click Y      : 614"
+          Write-Host ""
+          Write-Host "Before click : 5 seconds"
+          Write-Host "After click  : 10 seconds"
+          Write-Host "Total video  : ~15 seconds"
+          Write-Host ""
+          Write-Host "Red dot      : 10x10 pixels"
+          Write-Host ""
+          Write-Host "Screenshot   : rdp-click-screenshot.png"
+          Write-Host "Video        : rdp-click-video.mp4"
+          Write-Host ""
+          Write-Host "Artifacts:"
+          Write-Host "  rdp-click-screenshot"
+          Write-Host "  rdp-click-video"
           Write-Host ""
           Write-Host "No Keep Alive."
-          Write-Host "Workflow will finish now."
           Write-Host ""
           Write-Host "================================================"
