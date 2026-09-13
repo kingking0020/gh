@@ -18,6 +18,10 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
+          Write-Host "============================================"
+          Write-Host "CONFIGURING RDP"
+          Write-Host "============================================"
+
           Set-ItemProperty `
             -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
             -Name "fDenyTSConnections" `
@@ -25,32 +29,73 @@ jobs:
             -Force
 
           Enable-NetFirewallRule `
-            -DisplayGroup "Remote Desktop"
+            -DisplayGroup "Remote Desktop" `
+            -ErrorAction SilentlyContinue
 
           $password = "WindowsRDP#2025"
+          $username = "runneradmin"
 
           $user = Get-LocalUser `
-            -Name "runneradmin" `
+            -Name $username `
             -ErrorAction SilentlyContinue
 
           if ($user) {
-              net user runneradmin $password
+
+              Write-Host "User $username already exists."
+
+              net user $username $password
+
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Failed to update password for $username."
+              }
+
           }
           else {
-              net user runneradmin $password /add
+
+              Write-Host "Creating user $username..."
+
+              net user $username $password /add
+
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Failed to create user $username."
+              }
           }
 
-          $admins = net localgroup Administrators
+          $isAdmin = Get-LocalGroupMember `
+            -Group "Administrators" `
+            -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.Name -match "\\$username$"
+            }
 
-          if ($admins -notmatch "runneradmin") {
-              net localgroup Administrators runneradmin /add
+          if ($isAdmin) {
+
+              Write-Host "$username is already an Administrator."
+
+          }
+          else {
+
+              Write-Host "Adding $username to Administrators..."
+
+              Add-LocalGroupMember `
+                -Group "Administrators" `
+                -Member $username
+
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Failed to add $username to Administrators."
+              }
+
+              Write-Host "$username added to Administrators."
           }
 
-          "RDP_USER=runneradmin" |
+          "RDP_USER=$username" |
             Out-File $env:GITHUB_ENV -Append
 
           "RDP_PASS=$password" |
             Out-File $env:GITHUB_ENV -Append
+
+          Write-Host ""
+          Write-Host "RDP CONFIGURATION COMPLETE"
 
       # ============================================================
       # 2. INSTALL GOOGLE CHROME
@@ -70,6 +115,7 @@ jobs:
               $chrome = $chrome32
           }
           else {
+
               $installer = "$env:TEMP\chrome_installer.exe"
 
               Invoke-WebRequest `
@@ -167,6 +213,7 @@ jobs:
           cmd.exe /c "schtasks /query /tn `"$taskName`" >nul 2>&1"
 
           if ($LASTEXITCODE -eq 0) {
+
               cmd.exe /c "schtasks /delete /tn `"$taskName`" /f >nul 2>&1"
 
               if ($LASTEXITCODE -ne 0) {
@@ -530,10 +577,6 @@ jobs:
           }
           "@
 
-          # ========================================================
-          # SETTINGS
-          # ========================================================
-
           $x = 84
           $y = 614
 
@@ -556,10 +599,6 @@ jobs:
           Write-Host "Total video  : 15 seconds"
           Write-Host "Resolution   : NOT FORCED"
           Write-Host ""
-
-          # ========================================================
-          # ACTUAL DESKTOP SIZE
-          # ========================================================
 
           $screen = [System.Windows.Forms.SystemInformation]::VirtualScreen
 
@@ -593,7 +632,7 @@ jobs:
           $form.Refresh()
 
           # ========================================================
-          # START FFmpeg
+          # START FFMPEG
           # ========================================================
 
           Write-Host "Starting FFmpeg..."
