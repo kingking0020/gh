@@ -18,10 +18,6 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          Write-Host "============================================"
-          Write-Host "CONFIGURING RDP"
-          Write-Host "============================================"
-
           Set-ItemProperty `
             -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
             -Name "fDenyTSConnections" `
@@ -46,7 +42,7 @@ jobs:
               net user $username $password
 
               if ($LASTEXITCODE -ne 0) {
-                  throw "Failed to update password for $username."
+                  throw "Failed to update password."
               }
 
           }
@@ -57,7 +53,7 @@ jobs:
               net user $username $password /add
 
               if ($LASTEXITCODE -ne 0) {
-                  throw "Failed to create user $username."
+                  throw "Failed to create user."
               }
           }
 
@@ -81,10 +77,6 @@ jobs:
                 -Group "Administrators" `
                 -Member $username
 
-              if ($LASTEXITCODE -ne 0) {
-                  throw "Failed to add $username to Administrators."
-              }
-
               Write-Host "$username added to Administrators."
           }
 
@@ -93,9 +85,6 @@ jobs:
 
           "RDP_PASS=$password" |
             Out-File $env:GITHUB_ENV -Append
-
-          Write-Host ""
-          Write-Host "RDP CONFIGURATION COMPLETE"
 
       # ============================================================
       # 2. INSTALL GOOGLE CHROME
@@ -243,15 +232,6 @@ jobs:
               throw "Failed to create Chrome scheduled task."
           }
 
-          & schtasks.exe `
-            /query `
-            /tn $taskName `
-            /fo LIST
-
-          if ($LASTEXITCODE -ne 0) {
-              throw "Chrome task verification failed."
-          }
-
       # ============================================================
       # 5. INSTALL + CONNECT TAILSCALE
       # ============================================================
@@ -322,8 +302,7 @@ jobs:
           "TAILSCALE_IP=$ip" |
             Out-File $env:GITHUB_ENV -Append
 
-          Write-Host "Tailscale IP:"
-          Write-Host $ip
+          Write-Host "Tailscale IP: $ip"
 
       # ============================================================
       # 6. PREPARE RDP LOGIN
@@ -352,7 +331,7 @@ jobs:
           }
 
       # ============================================================
-      # 7. START RDP - NO FIXED RESOLUTION
+      # 7. START RDP
       # ============================================================
       - name: Start Automatic RDP Session
         shell: powershell
@@ -412,9 +391,7 @@ jobs:
             /run `
             /tn "OpenChromeAutomatically"
 
-          $exitCode = $LASTEXITCODE
-
-          if ($exitCode -ne 0) {
+          if ($LASTEXITCODE -ne 0) {
               throw "Could not start Chrome scheduled task."
           }
 
@@ -539,7 +516,7 @@ jobs:
             Select-Object -First 1
 
       # ============================================================
-      # 12. CREATE CLICK + RECORD SCRIPT
+      # 12. CREATE WINDOW MINIMIZE + CLICK + RECORD SCRIPT
       # ============================================================
       - name: Create Click And Record Script
         shell: powershell
@@ -553,6 +530,53 @@ jobs:
 
           Add-Type -AssemblyName System.Windows.Forms
           Add-Type -AssemblyName System.Drawing
+
+          Add-Type @"
+          using System;
+          using System.Runtime.InteropServices;
+          using System.Text;
+
+          public class WindowAPI
+          {
+              public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+              [DllImport("user32.dll")]
+              public static extern bool EnumWindows(
+                  EnumWindowsProc lpEnumFunc,
+                  IntPtr lParam
+              );
+
+              [DllImport("user32.dll")]
+              public static extern bool IsWindowVisible(IntPtr hWnd);
+
+              [DllImport("user32.dll")]
+              public static extern int GetWindowText(
+                  IntPtr hWnd,
+                  StringBuilder lpString,
+                  int nMaxCount
+              );
+
+              [DllImport("user32.dll")]
+              public static extern uint GetWindowThreadProcessId(
+                  IntPtr hWnd,
+                  out uint processId
+              );
+
+              [DllImport("user32.dll")]
+              public static extern bool ShowWindow(
+                  IntPtr hWnd,
+                  int nCmdShow
+              );
+
+              [DllImport("user32.dll")]
+              public static extern bool SetForegroundWindow(
+                  IntPtr hWnd
+              );
+
+              public const int SW_MINIMIZE = 6;
+              public const int SW_RESTORE = 9;
+          }
+          "@
 
           Add-Type @"
           using System;
@@ -577,6 +601,10 @@ jobs:
           }
           "@
 
+          # ========================================================
+          # SETTINGS
+          # ========================================================
+
           $x = 84
           $y = 614
 
@@ -589,28 +617,168 @@ jobs:
           $screenshotOutput = "C:\temp\rdp-click-screenshot.png"
 
           Write-Host "============================================"
-          Write-Host "CLICK + RECORD"
+          Write-Host "MINIMIZE WINDOWS + CLICK + RECORD"
           Write-Host "============================================"
 
-          Write-Host "Click X      : $x"
-          Write-Host "Click Y      : $y"
-          Write-Host "Before click : $preSeconds seconds"
-          Write-Host "After click  : $postSeconds seconds"
-          Write-Host "Total video  : 15 seconds"
-          Write-Host "Resolution   : NOT FORCED"
+          # ========================================================
+          # FIND CHROME PROCESS
+          # ========================================================
+
+          $chromeProcesses = Get-Process `
+            -Name "chrome" `
+            -ErrorAction SilentlyContinue
+
+          if (-not $chromeProcesses) {
+              throw "Chrome process not found."
+          }
+
+          Write-Host "Chrome process found."
+
+          # ========================================================
+          # MINIMIZE ALL TOP-LEVEL WINDOWS EXCEPT CHROME
+          # ========================================================
+
           Write-Host ""
+          Write-Host "Minimizing all windows except Chrome..."
+
+          $chromePids = @(
+              $chromeProcesses |
+              ForEach-Object {
+                  [uint32]$_.Id
+              }
+          )
+
+          $callback = [WindowAPI+EnumWindowsProc] {
+
+              param(
+                  [IntPtr]$hWnd,
+                  [IntPtr]$lParam
+              )
+
+              if (-not [WindowAPI]::IsWindowVisible($hWnd)) {
+                  return $true
+              }
+
+              $processId = [uint32]0
+
+              [WindowAPI]::GetWindowThreadProcessId(
+                  $hWnd,
+                  [ref]$processId
+              ) | Out-Null
+
+              # Never minimize Chrome
+              if ($chromePids -contains $processId) {
+                  return $true
+              }
+
+              $titleBuilder = New-Object System.Text.StringBuilder 512
+
+              [WindowAPI]::GetWindowText(
+                  $hWnd,
+                  $titleBuilder,
+                  $titleBuilder.Capacity
+              ) | Out-Null
+
+              $title = $titleBuilder.ToString()
+
+              if ([string]::IsNullOrWhiteSpace($title)) {
+                  return $true
+              }
+
+              try {
+
+                  $process = Get-Process `
+                    -Id $processId `
+                    -ErrorAction SilentlyContinue
+
+                  if ($process) {
+
+                      Write-Host "Minimizing: $($process.ProcessName) - $title"
+
+                      [WindowAPI]::ShowWindow(
+                          $hWnd,
+                          [WindowAPI]::SW_MINIMIZE
+                      ) | Out-Null
+                  }
+
+              }
+              catch {
+              }
+
+              return $true
+          }
+
+          [WindowAPI]::EnumWindows(
+              $callback,
+              [IntPtr]::Zero
+          ) | Out-Null
+
+          Write-Host "All non-Chrome windows minimized."
+
+          # ========================================================
+          # BRING CHROME TO FRONT
+          # ========================================================
+
+          $chromeWindow = $null
+
+          for ($i = 1; $i -le 20; $i++) {
+
+              $chromeProcesses = Get-Process `
+                -Name "chrome" `
+                -ErrorAction SilentlyContinue
+
+              foreach ($process in $chromeProcesses) {
+
+                  if ($process.MainWindowHandle -ne [IntPtr]::Zero) {
+                      $chromeWindow = $process.MainWindowHandle
+                      break
+                  }
+              }
+
+              if ($chromeWindow) {
+                  break
+              }
+
+              Start-Sleep -Milliseconds 500
+          }
+
+          if ($chromeWindow) {
+
+              [WindowAPI]::ShowWindow(
+                  $chromeWindow,
+                  [WindowAPI]::SW_RESTORE
+              ) | Out-Null
+
+              [WindowAPI]::SetForegroundWindow(
+                  $chromeWindow
+              ) | Out-Null
+
+              Write-Host "Chrome brought to foreground."
+
+          }
+          else {
+
+              Write-Host "Chrome main window handle not found."
+
+          }
+
+          Start-Sleep -Seconds 2
+
+          # ========================================================
+          # ACTUAL DESKTOP SIZE
+          # ========================================================
 
           $screen = [System.Windows.Forms.SystemInformation]::VirtualScreen
 
+          Write-Host ""
           Write-Host "Actual Desktop:"
           Write-Host "Left   : $($screen.Left)"
           Write-Host "Top    : $($screen.Top)"
           Write-Host "Width  : $($screen.Width)"
           Write-Host "Height : $($screen.Height)"
-          Write-Host ""
 
           # ========================================================
-          # VERY SMALL RED DOT
+          # RED DOT
           # ========================================================
 
           $form = New-Object System.Windows.Forms.Form
@@ -619,7 +787,6 @@ jobs:
           $form.StartPosition = "Manual"
           $form.ShowInTaskbar = $false
           $form.TopMost = $true
-
           $form.BackColor = [System.Drawing.Color]::Red
 
           $form.Width = 10
@@ -632,9 +799,24 @@ jobs:
           $form.Refresh()
 
           # ========================================================
+          # DELETE OLD FILES
+          # ========================================================
+
+          Remove-Item `
+            $videoOutput `
+            -Force `
+            -ErrorAction SilentlyContinue
+
+          Remove-Item `
+            $screenshotOutput `
+            -Force `
+            -ErrorAction SilentlyContinue
+
+          # ========================================================
           # START FFMPEG
           # ========================================================
 
+          Write-Host ""
           Write-Host "Starting FFmpeg..."
 
           $arguments = @(
@@ -674,7 +856,7 @@ jobs:
 
           Write-Host "Recording 5 seconds before click..."
 
-          Start-Sleep -Seconds 5
+          Start-Sleep -Seconds $preSeconds
 
           # ========================================================
           # MOVE MOUSE
@@ -682,12 +864,15 @@ jobs:
 
           Write-Host "Moving mouse to X=$x Y=$y"
 
-          [MouseAPI]::SetCursorPos($x, $y)
+          [MouseAPI]::SetCursorPos(
+              $x,
+              $y
+          ) | Out-Null
 
           Start-Sleep -Milliseconds 300
 
           # ========================================================
-          # REAL CLICK
+          # CLICK
           # ========================================================
 
           Write-Host "CLICKING X=$x Y=$y"
@@ -713,7 +898,7 @@ jobs:
           Write-Host "CLICK COMPLETED."
 
           # ========================================================
-          # SCREENSHOT AFTER CLICK
+          # SCREENSHOT
           # ========================================================
 
           Start-Sleep -Milliseconds 500
@@ -745,16 +930,15 @@ jobs:
           $graphics.Dispose()
           $bitmap.Dispose()
 
-          Write-Host "Screenshot created:"
-          Write-Host $screenshotOutput
+          Write-Host "Screenshot created."
 
           # ========================================================
-          # 10 SECONDS AFTER CLICK
+          # REMAINING 10 SECONDS
           # ========================================================
 
           Write-Host "Recording 10 seconds after click..."
 
-          Start-Sleep -Seconds 10
+          Start-Sleep -Seconds $postSeconds
 
           # ========================================================
           # WAIT FOR FFMPEG
@@ -775,10 +959,9 @@ jobs:
           $form.Close()
           $form.Dispose()
 
-          Write-Host ""
-          Write-Host "============================================"
-          Write-Host "CLICK + RECORD COMPLETED"
-          Write-Host "============================================"
+          # ========================================================
+          # VERIFY FILES
+          # ========================================================
 
           if (-not (Test-Path $videoOutput)) {
               throw "Video file was not created."
@@ -788,17 +971,31 @@ jobs:
               throw "Screenshot file was not created."
           }
 
+          $videoSize = (Get-Item $videoOutput).Length
+          $screenshotSize = (Get-Item $screenshotOutput).Length
+
+          Write-Host ""
+          Write-Host "============================================"
+          Write-Host "RECORDING COMPLETED"
+          Write-Host "============================================"
+
           Write-Host "Video:"
           Write-Host $videoOutput
+          Write-Host "Size: $videoSize bytes"
+
+          Write-Host ""
 
           Write-Host "Screenshot:"
           Write-Host $screenshotOutput
+          Write-Host "Size: $screenshotSize bytes"
 
-          Write-Host "Video size:"
-          Write-Host (Get-Item $videoOutput).Length
+          if ($videoSize -lt 10000) {
+              throw "Video file is suspiciously small."
+          }
 
-          Write-Host "Screenshot size:"
-          Write-Host (Get-Item $screenshotOutput).Length
+          if ($screenshotSize -lt 1000) {
+              throw "Screenshot file is suspiciously small."
+          }
 
           '@
 
@@ -807,10 +1004,10 @@ jobs:
             -Value $script `
             -Encoding UTF8
 
-          Write-Host "Click recording script created."
+          Write-Host "Click and recording script created."
 
       # ============================================================
-      # 13. CREATE RECORDING SCHEDULED TASK
+      # 13. CREATE RECORDING TASK
       # ============================================================
       - name: Create Recording Scheduled Task
         shell: powershell
@@ -857,7 +1054,7 @@ jobs:
           }
 
       # ============================================================
-      # 14. START CLICK + RECORDING
+      # 14. START RECORDING
       # ============================================================
       - name: Start Click And Recording
         shell: powershell
@@ -872,10 +1069,8 @@ jobs:
             /run `
             /tn "RDPClickAndRecord"
 
-          $exitCode = $LASTEXITCODE
-
-          if ($exitCode -ne 0) {
-              throw "Could not start recording task. Exit code: $exitCode"
+          if ($LASTEXITCODE -ne 0) {
+              throw "Could not start recording task."
           }
 
           Write-Host ""
@@ -925,7 +1120,40 @@ jobs:
           Write-Host "Recording completed."
 
       # ============================================================
-      # 16. COPY FILES
+      # 16. VERIFY VIDEO WITH FFMPEG
+      # ============================================================
+      - name: Verify Video
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $ffprobe = "C:\ffmpeg\bin\ffprobe.exe"
+          $video = "C:\temp\rdp-click-video.mp4"
+
+          if (-not (Test-Path $video)) {
+              throw "Video file does not exist."
+          }
+
+          if (-not (Test-Path $ffprobe)) {
+              Write-Host "ffprobe not found. Skipping ffprobe verification."
+              exit 0
+          }
+
+          Write-Host "Checking video..."
+
+          & $ffprobe `
+            -v error `
+            -show_entries format=format_name,duration,size `
+            -show_entries stream=codec_name,width,height,r_frame_rate `
+            -of default=noprint_wrappers=1 `
+            $video
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Video verification failed."
+          }
+
+      # ============================================================
+      # 17. COPY FILES
       # ============================================================
       - name: Copy Recording Files
         shell: powershell
@@ -945,7 +1173,7 @@ jobs:
           Write-Host "Files copied."
 
       # ============================================================
-      # 17. UPLOAD SCREENSHOT
+      # 18. UPLOAD SCREENSHOT
       # ============================================================
       - name: Upload Screenshot Artifact
         uses: actions/upload-artifact@v4
@@ -956,7 +1184,7 @@ jobs:
           retention-days: 1
 
       # ============================================================
-      # 18. UPLOAD VIDEO
+      # 19. UPLOAD VIDEO
       # ============================================================
       - name: Upload Click Recording Artifact
         uses: actions/upload-artifact@v4
@@ -967,7 +1195,7 @@ jobs:
           retention-days: 1
 
       # ============================================================
-      # 19. FINAL INFORMATION
+      # 20. FINAL INFORMATION
       # ============================================================
       - name: Display Final Information
         shell: powershell
@@ -982,6 +1210,9 @@ jobs:
           Write-Host ""
           Write-Host "Resolution   : NOT FORCED"
           Write-Host "RDP Mode     : FULL SCREEN"
+          Write-Host ""
+          Write-Host "Other Windows: MINIMIZED"
+          Write-Host "Chrome       : KEPT VISIBLE"
           Write-Host ""
           Write-Host "Click X      : 84"
           Write-Host "Click Y      : 614"
