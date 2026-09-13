@@ -1,0 +1,661 @@
+name: Pure RDP via Tailscale
+
+on:
+  workflow_dispatch:
+
+jobs:
+  rdp-session:
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+
+      # ============================================================
+      # 1. CONFIGURE RDP
+      # ============================================================
+      - name: Configure RDP
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================"
+          Write-Host "Configuring RDP"
+          Write-Host "============================================"
+
+          Set-ItemProperty `
+            -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
+            -Name "fDenyTSConnections" `
+            -Value 0 `
+            -Force
+
+          Enable-NetFirewallRule `
+            -DisplayGroup "Remote Desktop"
+
+          $password = "WindowsRDP#2025"
+
+          $user = Get-LocalUser `
+            -Name "runneradmin" `
+            -ErrorAction SilentlyContinue
+
+          if ($user) {
+              Write-Host "runneradmin already exists."
+              net user runneradmin $password
+          }
+          else {
+              Write-Host "Creating runneradmin..."
+              net user runneradmin $password /add
+          }
+
+          $admins = net localgroup Administrators
+
+          if ($admins -match "runneradmin") {
+              Write-Host "runneradmin is already an Administrator."
+          }
+          else {
+              Write-Host "Adding runneradmin to Administrators..."
+              net localgroup Administrators runneradmin /add
+          }
+
+          "RDP_USER=runneradmin" |
+            Out-File $env:GITHUB_ENV -Append
+
+          "RDP_PASS=$password" |
+            Out-File $env:GITHUB_ENV -Append
+
+          Write-Host "RDP configuration completed."
+
+
+      # ============================================================
+      # 2. INSTALL GOOGLE CHROME
+      # ============================================================
+      - name: Install Google Chrome
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================"
+          Write-Host "Checking Google Chrome"
+          Write-Host "============================================"
+
+          $chrome64 = "${env:ProgramFiles}\Google\Chrome\Application\chrome.exe"
+          $chrome32 = "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe"
+
+          if (Test-Path $chrome64) {
+
+              $chrome = $chrome64
+
+              Write-Host "Chrome found:"
+              Write-Host $chrome
+          }
+          elseif (Test-Path $chrome32) {
+
+              $chrome = $chrome32
+
+              Write-Host "Chrome found:"
+              Write-Host $chrome
+          }
+          else {
+
+              Write-Host "Chrome not found."
+              Write-Host "Downloading Chrome..."
+
+              $installer = "$env:TEMP\chrome_installer.exe"
+
+              Invoke-WebRequest `
+                -Uri "https://dl.google.com/chrome/install/latest/chrome_installer.exe" `
+                -OutFile $installer
+
+              Start-Process `
+                -FilePath $installer `
+                -ArgumentList "/silent", "/install" `
+                -Wait `
+                -NoNewWindow
+
+              Remove-Item `
+                $installer `
+                -Force `
+                -ErrorAction SilentlyContinue
+
+              Start-Sleep -Seconds 5
+
+              if (Test-Path $chrome64) {
+                  $chrome = $chrome64
+              }
+              elseif (Test-Path $chrome32) {
+                  $chrome = $chrome32
+              }
+              else {
+                  throw "Chrome installation failed."
+              }
+          }
+
+          "CHROME_PATH=$chrome" |
+            Out-File $env:GITHUB_ENV -Append
+
+          Write-Host "Chrome ready."
+
+
+      # ============================================================
+      # 3. CREATE CHROME SCRIPT
+      # ============================================================
+      - name: Create Chrome Script
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================"
+          Write-Host "Creating Chrome startup script"
+          Write-Host "============================================"
+
+          $tempDir = "C:\temp"
+
+          New-Item `
+            -ItemType Directory `
+            -Path $tempDir `
+            -Force |
+            Out-Null
+
+          $scriptPath = "C:\temp\OpenChrome.ps1"
+
+          $chromeScript = @'
+          Write-Host "Chrome task started."
+
+          # Give the RDP desktop time to initialize
+          Start-Sleep -Seconds 5
+
+          Write-Host "Starting Chrome..."
+
+          $chrome = "C:\Program Files\Google\Chrome\Application\chrome.exe"
+
+          if (-not (Test-Path $chrome)) {
+              $chrome = "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
+          }
+
+          if (-not (Test-Path $chrome)) {
+              Write-Host "Chrome executable not found."
+              exit 1
+          }
+
+          Write-Host "Chrome executable:"
+          Write-Host $chrome
+
+          # Chrome first-run bypass
+          $chromeArguments = @(
+              "--no-first-run"
+              "--no-default-browser-check"
+              "--disable-features=WelcomeToChrome"
+              "--start-maximized"
+              "https://github.com"
+          )
+
+          Write-Host "Launching Chrome..."
+
+          Start-Process `
+            -FilePath $chrome `
+            -ArgumentList $chromeArguments
+
+          Write-Host "Chrome launched."
+          '@
+
+          Set-Content `
+            -Path $scriptPath `
+            -Value $chromeScript `
+            -Encoding UTF8
+
+          Write-Host "Chrome script created:"
+          Write-Host $scriptPath
+
+
+      # ============================================================
+      # 4. CREATE SCHEDULED TASK
+      # ============================================================
+      - name: Create Chrome Scheduled Task
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================"
+          Write-Host "Creating Chrome Scheduled Task"
+          Write-Host "============================================"
+
+          $taskName = "OpenChromeAutomatically"
+
+          Write-Host "Checking existing task..."
+
+          cmd.exe /c "schtasks /query /tn `"$taskName`" >nul 2>&1"
+
+          $queryExitCode = $LASTEXITCODE
+
+          if ($queryExitCode -eq 0) {
+
+              Write-Host "Existing task found."
+              Write-Host "Deleting existing task..."
+
+              cmd.exe /c "schtasks /delete /tn `"$taskName`" /f >nul 2>&1"
+
+              $deleteExitCode = $LASTEXITCODE
+
+              if ($deleteExitCode -ne 0) {
+                  throw "Failed to delete existing Chrome task."
+              }
+
+              Write-Host "Existing task deleted."
+          }
+          else {
+              Write-Host "No existing Chrome task found."
+          }
+
+          Write-Host "Creating new task..."
+
+          $createArguments = @(
+              "/create"
+              "/tn"
+              $taskName
+              "/tr"
+              'powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\temp\OpenChrome.ps1'
+              "/sc"
+              "ONLOGON"
+              "/ru"
+              "runneradmin"
+              "/rp"
+              "WindowsRDP#2025"
+              "/it"
+              "/f"
+          )
+
+          & schtasks.exe @createArguments
+
+          $createExitCode = $LASTEXITCODE
+
+          if ($createExitCode -ne 0) {
+              throw "Failed to create Chrome scheduled task. Exit code: $createExitCode"
+          }
+
+          Write-Host "Chrome task created."
+
+          Write-Host "Verifying task..."
+
+          & schtasks.exe `
+            /query `
+            /tn $taskName `
+            /fo LIST
+
+          $verifyExitCode = $LASTEXITCODE
+
+          if ($verifyExitCode -ne 0) {
+              throw "Chrome task verification failed."
+          }
+
+          Write-Host "Chrome task verified."
+
+
+      # ============================================================
+      # 5. INSTALL + CONNECT TAILSCALE
+      # ============================================================
+      - name: Install and Connect Tailscale
+        shell: powershell
+        env:
+          TS_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================"
+          Write-Host "Installing Tailscale"
+          Write-Host "============================================"
+
+          $installer = "$env:TEMP\tailscale-setup.exe"
+
+          Invoke-WebRequest `
+            -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" `
+            -OutFile $installer
+
+          Start-Process `
+            -FilePath $installer `
+            -ArgumentList "/S" `
+            -Wait `
+            -NoNewWindow
+
+          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+
+          if (-not (Test-Path $tailscale)) {
+              throw "Tailscale executable not found."
+          }
+
+          if ([string]::IsNullOrWhiteSpace($env:TS_AUTH_KEY)) {
+              throw "TAILSCALE_AUTH_KEY is missing."
+          }
+
+          Write-Host "Connecting Tailscale..."
+
+          $log = "$env:TEMP\tailscale.log"
+
+          & $tailscale up `
+            --auth-key="$env:TS_AUTH_KEY" `
+            --hostname="github-runner-$env:GITHUB_RUN_ID" `
+            *> $log
+
+          $exitCode = $LASTEXITCODE
+
+          Remove-Item `
+            $log `
+            -Force `
+            -ErrorAction SilentlyContinue
+
+          if ($exitCode -ne 0) {
+              throw "Tailscale authentication failed."
+          }
+
+          Write-Host "Tailscale connected."
+
+          $ip = $null
+
+          for ($i = 1; $i -le 20; $i++) {
+
+              $ip = & $tailscale ip -4 2>$null
+
+              if ($ip) {
+                  break
+              }
+
+              Write-Host "Waiting for Tailscale IP..."
+
+              Start-Sleep -Seconds 3
+          }
+
+          if (-not $ip) {
+              throw "Tailscale IPv4 not found."
+          }
+
+          "TAILSCALE_IP=$ip" |
+            Out-File $env:GITHUB_ENV -Append
+
+          Write-Host ""
+          Write-Host "Tailscale IP:"
+          Write-Host $ip
+
+
+      # ============================================================
+      # 6. PREPARE RDP LOGIN
+      # ============================================================
+      - name: Prepare Automatic RDP Login
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================"
+          Write-Host "Preparing RDP credentials"
+          Write-Host "============================================"
+
+          cmdkey `
+            /generic:TERMSRV/127.0.0.1 `
+            /user:runneradmin `
+            /pass:WindowsRDP#2025
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Failed to store RDP credentials."
+          }
+
+          cmdkey `
+            /generic:TERMSRV/localhost `
+            /user:runneradmin `
+            /pass:WindowsRDP#2025
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Failed to store localhost RDP credentials."
+          }
+
+          Write-Host "RDP credentials prepared."
+
+
+      # ============================================================
+      # 7. START RDP
+      # ============================================================
+      - name: Start Automatic RDP Session
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================"
+          Write-Host "STARTING AUTOMATIC RDP SESSION"
+          Write-Host "============================================"
+
+          $regPath = "HKCU:\Software\Microsoft\Terminal Server Client"
+
+          if (!(Test-Path $regPath)) {
+
+              New-Item `
+                -Path $regPath `
+                -Force |
+                Out-Null
+          }
+
+          Set-ItemProperty `
+            -Path $regPath `
+            -Name "AuthenticationLevelOverride" `
+            -Value 0 `
+            -Type DWord `
+            -Force
+
+          $mstsc = "$env:SystemRoot\System32\mstsc.exe"
+
+          if (-not (Test-Path $mstsc)) {
+              throw "mstsc.exe not found."
+          }
+
+          Write-Host "Starting RDP client..."
+
+          $process = Start-Process `
+            -FilePath $mstsc `
+            -ArgumentList "/v:127.0.0.1 /f" `
+            -PassThru
+
+          Write-Host "RDP client started."
+          Write-Host "PID: $($process.Id)"
+
+          # ========================================================
+          # WAIT 100 SECONDS FOR RDP DESKTOP
+          # ========================================================
+
+          Write-Host ""
+          Write-Host "Waiting 100 seconds for RDP desktop..."
+          Start-Sleep -Seconds 100
+
+          Write-Host ""
+          Write-Host "Current sessions:"
+          quser
+
+          Write-Host ""
+          Write-Host "RDP wait completed."
+
+
+      # ============================================================
+      # 8. LAUNCH CHROME
+      # ============================================================
+      - name: Launch Chrome In RDP Session
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================"
+          Write-Host "LAUNCHING CHROME"
+          Write-Host "============================================"
+
+          Write-Host "Current sessions:"
+          quser
+
+          Write-Host ""
+          Write-Host "Starting Chrome scheduled task..."
+
+          & schtasks.exe `
+            /run `
+            /tn "OpenChromeAutomatically"
+
+          $exitCode = $LASTEXITCODE
+
+          if ($exitCode -ne 0) {
+              throw "Could not start Chrome scheduled task. Exit code: $exitCode"
+          }
+
+          Write-Host "Chrome scheduled task started."
+
+
+      # ============================================================
+      # 9. WAIT FOR CHROME
+      # ============================================================
+      - name: Wait For Chrome
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================"
+          Write-Host "WAITING FOR CHROME"
+          Write-Host "============================================"
+
+          $found = $false
+
+          for ($i = 1; $i -le 60; $i++) {
+
+              $chrome = Get-Process `
+                -Name "chrome" `
+                -ErrorAction SilentlyContinue
+
+              if ($chrome) {
+
+                  Write-Host ""
+                  Write-Host "Chrome process detected."
+
+                  $found = $true
+                  break
+              }
+
+              Write-Host "Chrome not detected yet: $i / 60"
+
+              Start-Sleep -Seconds 2
+          }
+
+          if (-not $found) {
+              throw "Chrome was not detected after 120 seconds."
+          }
+
+          Write-Host "Chrome is running."
+
+
+      # ============================================================
+      # 10. WAIT 100 SECONDS FOR WEBSITE
+      # ============================================================
+      - name: Wait 100 Seconds For Website
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "============================================"
+          Write-Host "WAITING FOR WEBSITE"
+          Write-Host "============================================"
+
+          Write-Host "Waiting 100 seconds for Chrome and website..."
+
+          Start-Sleep -Seconds 100
+
+          Write-Host "Website wait completed."
+
+
+      # ============================================================
+      # 11. TAKE SCREENSHOT
+      # ============================================================
+      - name: Take Screenshot
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "============================================"
+          Write-Host "TAKING SCREENSHOT"
+          Write-Host "============================================"
+
+          Add-Type -AssemblyName System.Windows.Forms
+          Add-Type -AssemblyName System.Drawing
+
+          $output = "$env:GITHUB_WORKSPACE\rdp-screenshot.png"
+
+          $screen = [System.Windows.Forms.SystemInformation]::VirtualScreen
+
+          Write-Host "Screen:"
+          Write-Host "Left   : $($screen.Left)"
+          Write-Host "Top    : $($screen.Top)"
+          Write-Host "Width  : $($screen.Width)"
+          Write-Host "Height : $($screen.Height)"
+
+          $bitmap = New-Object `
+            System.Drawing.Bitmap `
+            $screen.Width, `
+            $screen.Height
+
+          $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+
+          $graphics.CopyFromScreen(
+            $screen.Left,
+            $screen.Top,
+            0,
+            0,
+            $screen.Size
+          )
+
+          $bitmap.Save(
+            $output,
+            [System.Drawing.Imaging.ImageFormat]::Png
+          )
+
+          $graphics.Dispose()
+          $bitmap.Dispose()
+
+          if (-not (Test-Path $output)) {
+              throw "Screenshot was not created."
+          }
+
+          $size = (Get-Item $output).Length
+
+          Write-Host ""
+          Write-Host "Screenshot created successfully."
+          Write-Host "Path: $output"
+          Write-Host "Size: $size bytes"
+
+
+      # ============================================================
+      # 12. UPLOAD SCREENSHOT
+      # ============================================================
+      - name: Upload Screenshot Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rdp-screenshot
+          path: ${{ github.workspace }}/rdp-screenshot.png
+          if-no-files-found: error
+          retention-days: 1
+
+
+      # ============================================================
+      # 13. FINAL INFORMATION
+      # ============================================================
+      - name: Display RDP Information
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "================================================"
+          Write-Host "              RDP JOB COMPLETED"
+          Write-Host "================================================"
+          Write-Host ""
+          Write-Host "Tailscale IP : $env:TAILSCALE_IP"
+          Write-Host "Username     : $env:RDP_USER"
+          Write-Host "Chrome       : OPENED AUTOMATICALLY"
+          Write-Host "Website      : https://github.com"
+          Write-Host "First Run    : BYPASSED"
+          Write-Host "RDP Wait     : 100 seconds"
+          Write-Host "Website Wait : 100 seconds"
+          Write-Host "Screenshot   : rdp-screenshot.png"
+          Write-Host "Artifact     : rdp-screenshot"
+          Write-Host ""
+          Write-Host "No Keep Alive."
+          Write-Host "Workflow will finish now."
+          Write-Host ""
+          Write-Host "================================================"
