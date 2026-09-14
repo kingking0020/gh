@@ -8,34 +8,98 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 15
 
+    env:
+      RDP_USERNAME: runneradmin
+      RDP_PASSWORD: WindowsRDP#2025
+      CLICK_X: "84"
+      CLICK_Y: "614"
+
     steps:
 
+      # ============================================================
+      # CHECKOUT
+      # ============================================================
+
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+
+      # ============================================================
+      # BASIC ENVIRONMENT INFO
+      # ============================================================
+
+      - name: Show runner information
+        shell: powershell
+        run: |
+          Write-Host "=== RUNNER INFORMATION ==="
+
+          Write-Host "User:"
+          whoami
+
+          Write-Host ""
+          Write-Host "Computer:"
+          hostname
+
+          Write-Host ""
+          Write-Host "GitHub Workspace:"
+          Write-Host $env:GITHUB_WORKSPACE
+
+          Write-Host ""
+          Write-Host "PowerShell:"
+          $PSVersionTable
 
       # ============================================================
       # RDP
       # ============================================================
+
       - name: Configure RDP
         shell: powershell
         run: |
           Write-Host "=== Configuring RDP ==="
 
-          $username = "runneradmin"
-          $password = "WindowsRDP#2025"
-          $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
+          $username = $env:RDP_USERNAME
+          $password = $env:RDP_PASSWORD
 
-          try {
-              Get-LocalUser -Name $username -ErrorAction Stop | Out-Null
-              Set-LocalUser -Name $username -Password $securePassword
+          $securePassword =
+            ConvertTo-SecureString `
+              $password `
+              -AsPlainText `
+              -Force
+
+          # --------------------------------------------------------
+          # Create or update user
+          # --------------------------------------------------------
+
+          $existingUser =
+            Get-LocalUser `
+              -Name $username `
+              -ErrorAction SilentlyContinue
+
+          if ($existingUser) {
+
+              Write-Host "User exists. Updating password..."
+
+              Set-LocalUser `
+                -Name $username `
+                -Password $securePassword `
+                -PasswordNeverExpires $true
+
           }
-          catch {
+          else {
+
+              Write-Host "Creating RDP user..."
+
               New-LocalUser `
                 -Name $username `
                 -Password $securePassword `
                 -PasswordNeverExpires `
-                -UserMayNotChangePassword
+                -UserMayNotChangePassword `
+                -Description "Temporary GitHub Actions RDP account"
+
           }
+
+          # --------------------------------------------------------
+          # Groups
+          # --------------------------------------------------------
 
           Add-LocalGroupMember `
             -Group "Administrators" `
@@ -47,6 +111,10 @@ jobs:
             -Member $username `
             -ErrorAction SilentlyContinue
 
+          # --------------------------------------------------------
+          # Enable RDP
+          # --------------------------------------------------------
+
           Set-ItemProperty `
             -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
             -Name "fDenyTSConnections" `
@@ -57,9 +125,17 @@ jobs:
             -Name "UserAuthentication" `
             -Value 0
 
+          # --------------------------------------------------------
+          # Firewall
+          # --------------------------------------------------------
+
           Enable-NetFirewallRule `
             -DisplayGroup "Remote Desktop" `
             -ErrorAction SilentlyContinue
+
+          # --------------------------------------------------------
+          # Service
+          # --------------------------------------------------------
 
           Set-Service `
             -Name TermService `
@@ -69,11 +145,21 @@ jobs:
             -Name TermService `
             -Force
 
-          Write-Host "RDP configured."
+          Start-Sleep -Seconds 3
+
+          Write-Host ""
+          Write-Host "=== RDP SERVICE ==="
+
+          Get-Service TermService |
+            Format-Table Name, Status, StartType -AutoSize
+
+          Write-Host ""
+          Write-Host "RDP configured successfully."
 
       # ============================================================
       # TAILSCALE
       # ============================================================
+
       - name: Install and Start Tailscale
         shell: powershell
         env:
@@ -81,15 +167,25 @@ jobs:
         run: |
           Write-Host "=== Installing Tailscale ==="
 
-          $tailscaleExe = "C:\Program Files\Tailscale\tailscale.exe"
+          if ([string]::IsNullOrWhiteSpace($env:TAILSCALE_AUTH_KEY)) {
+              throw "TAILSCALE_AUTH_KEY secret is empty."
+          }
+
+          $tailscaleExe =
+            "C:\Program Files\Tailscale\tailscale.exe"
 
           if (-not (Test-Path $tailscaleExe)) {
 
-              $installer = "$env:TEMP\tailscale-setup.exe"
+              $installer =
+                "$env:TEMP\tailscale-setup.exe"
+
+              Write-Host "Downloading Tailscale..."
 
               Invoke-WebRequest `
                 -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" `
                 -OutFile $installer
+
+              Write-Host "Installing Tailscale..."
 
               Start-Process `
                 -FilePath $installer `
@@ -103,6 +199,8 @@ jobs:
               throw "Tailscale executable was not found."
           }
 
+          Write-Host "Starting Tailscale..."
+
           & $tailscaleExe up `
             --auth-key="$env:TAILSCALE_AUTH_KEY" `
             --hostname="github-actions-rdp-3" `
@@ -114,24 +212,34 @@ jobs:
 
           Start-Sleep -Seconds 5
 
-          Write-Host "=== Tailscale Status ==="
+          Write-Host ""
+          Write-Host "=== TAILSCALE STATUS ==="
+
           & $tailscaleExe status
 
           Write-Host ""
-          Write-Host "=== Tailscale IP ==="
+          Write-Host "=== TAILSCALE IPv4 ==="
 
-          $tailscaleIP = & $tailscaleExe ip -4
+          $tailscaleIP =
+            (& $tailscaleExe ip -4 |
+              Out-String).Trim()
 
-          if (-not $tailscaleIP) {
+          if ([string]::IsNullOrWhiteSpace($tailscaleIP)) {
               throw "Could not obtain Tailscale IPv4 address."
           }
 
           Write-Host $tailscaleIP
 
+          "TAILSCALE_IP=$tailscaleIP" |
+            Out-File `
+              "$env:GITHUB_ENV" `
+              -Encoding utf8
+
       # ============================================================
       # CHROME
       # ============================================================
-      - name: Check Chrome
+
+      - name: Check and install Chrome
         shell: powershell
         run: |
           Write-Host "=== Checking Chrome ==="
@@ -143,56 +251,69 @@ jobs:
 
           $chromePath = $null
 
-          foreach ($p in $paths) {
-              if (Test-Path $p) {
-                  $chromePath = $p
+          foreach ($path in $paths) {
+
+              if (Test-Path $path) {
+
+                  $chromePath = $path
                   break
+
               }
           }
 
           if (-not $chromePath) {
 
-              Write-Host "Chrome not found. Installing..."
+              Write-Host "Chrome not found."
+              Write-Host "Installing with Chocolatey..."
 
               choco install googlechrome -y --no-progress
 
               Start-Sleep -Seconds 5
 
-              foreach ($p in $paths) {
-                  if (Test-Path $p) {
-                      $chromePath = $p
+              foreach ($path in $paths) {
+
+                  if (Test-Path $path) {
+
+                      $chromePath = $path
                       break
+
                   }
               }
           }
 
           if (-not $chromePath) {
-              throw "Chrome executable not found."
+              throw "Chrome executable was not found."
           }
 
-          Write-Host "Chrome found: $chromePath"
+          Write-Host "Chrome found:"
+          Write-Host $chromePath
 
           "CHROME_PATH=$chromePath" |
-            Out-File "$env:GITHUB_ENV" -Encoding utf8
+            Out-File `
+              "$env:GITHUB_ENV" `
+              -Encoding utf8
 
       # ============================================================
-      # DISABLE CHROME BROWSER SIGN-IN
+      # CHROME POLICY
       # ============================================================
-      - name: Configure Chrome Sign-in
+
+      - name: Configure Chrome policies
         shell: powershell
         run: |
-          Write-Host "=== Configuring Chrome sign-in policy ==="
+          Write-Host "=== Configuring Chrome policies ==="
 
-          $policyPath = "HKLM:\Software\Policies\Google\Chrome"
+          $policyPath =
+            "HKLM:\Software\Policies\Google\Chrome"
 
           if (-not (Test-Path $policyPath)) {
+
               New-Item `
                 -Path $policyPath `
                 -Force |
                 Out-Null
           }
 
-          # 0 = Disable browser sign-in
+          # Disable browser sign-in UI
           New-ItemProperty `
             -Path $policyPath `
             -Name "BrowserSignin" `
@@ -201,7 +322,7 @@ jobs:
             -Force |
             Out-Null
 
-          # Prevent automatic first-run welcome UI
+          # Disable sync
           New-ItemProperty `
             -Path $policyPath `
             -Name "SyncDisabled" `
@@ -210,11 +331,8 @@ jobs:
             -Force |
             Out-Null
 
-          Write-Host "BrowserSignin = 0"
-          Write-Host "SyncDisabled = 1"
-
           Write-Host ""
-          Write-Host "=== Chrome policies ==="
+          Write-Host "=== Applied Chrome Policies ==="
 
           Get-ItemProperty `
             -Path $policyPath |
@@ -222,24 +340,28 @@ jobs:
             Format-List
 
       # ============================================================
-      # CHROME TASK
+      # CHROME PROFILE
       # ============================================================
-      - name: Create Chrome Task
+
+      - name: Prepare Chrome profile
         shell: powershell
         run: |
-          Write-Host "=== Creating Chrome task ==="
+          Write-Host "=== Preparing Chrome profile ==="
 
-          $taskName = "OpenChromeAutomatically"
-          $chromePath = $env:CHROME_PATH
-          $chromeProfile = "C:\temp\ChromeProfile"
+          $chromeProfile =
+            "C:\temp\ChromeProfile"
 
-          if (-not $chromePath) {
-              throw "CHROME_PATH is empty."
-          }
+          New-Item `
+            -ItemType Directory `
+            -Path "C:\temp" `
+            -Force |
+            Out-Null
 
-          if (-not (Test-Path $chromePath)) {
-              throw "Chrome executable not found: $chromePath"
-          }
+          Remove-Item `
+            $chromeProfile `
+            -Recurse `
+            -Force `
+            -ErrorAction SilentlyContinue
 
           New-Item `
             -ItemType Directory `
@@ -247,7 +369,7 @@ jobs:
             -Force |
             Out-Null
 
-          # Remove previous Chrome process if somehow present
+          # Stop any old Chrome processes
           Get-Process chrome `
             -ErrorAction SilentlyContinue |
             Stop-Process `
@@ -256,176 +378,219 @@ jobs:
 
           Start-Sleep -Seconds 2
 
-          # Remove old scheduled task
-          $oldTask = Get-ScheduledTask `
-            -TaskName $taskName `
-            -ErrorAction SilentlyContinue
-
-          if ($oldTask) {
-
-              Write-Host "Removing old Chrome task..."
-
-              Unregister-ScheduledTask `
-                -TaskName $taskName `
-                -Confirm:$false `
-                -ErrorAction SilentlyContinue
-          }
-
-          # IMPORTANT:
-          # BrowserSignin=0 prevents the Chrome browser sign-in prompt.
-          #
-          # --no-first-run skips Chrome's normal first-run flow.
-          # --no-default-browser-check avoids default-browser prompts.
-          # Dedicated profile keeps this runner's browser state isolated.
-
-          $arguments = `
-            "--no-first-run " +
-            "--no-default-browser-check " +
-            "--start-maximized " +
-            "--new-window " +
-            "--user-data-dir=`"$chromeProfile`" " +
-            "https://github.com"
-
-          $action = New-ScheduledTaskAction `
-            -Execute $chromePath `
-            -Argument $arguments
-
-          $trigger = New-ScheduledTaskTrigger `
-            -AtLogOn `
-            -User "runneradmin"
-
-          $principal = New-ScheduledTaskPrincipal `
-            -UserId "runneradmin" `
-            -LogonType Interactive `
-            -RunLevel Highest
-
-          $settings = New-ScheduledTaskSettingsSet `
-            -AllowStartIfOnBatteries `
-            -DontStopIfGoingOnBatteries `
-            -StartWhenAvailable
-
-          Register-ScheduledTask `
-            -TaskName $taskName `
-            -Action $action `
-            -Trigger $trigger `
-            -Principal $principal `
-            -Settings $settings `
-            -Force
-
-          Write-Host ""
-          Write-Host "Chrome task created successfully."
-
-          Write-Host ""
-          Write-Host "=== Chrome Task ==="
-
-          Get-ScheduledTask `
-            -TaskName $taskName |
-            Format-List TaskName, State, TaskPath
-
-          Write-Host ""
-          Write-Host "=== Chrome Arguments ==="
-
-          (Get-ScheduledTask `
-            -TaskName $taskName).Actions |
-            Format-List *
+          Write-Host "Chrome profile ready."
 
       # ============================================================
-      # RDP SESSION
+      # RDP INFO
       # ============================================================
-      - name: Start RDP Session
+
+      - name: Show RDP connection information
         shell: powershell
         run: |
-          Write-Host "=== Starting RDP session ==="
+          Write-Host "=========================================="
+          Write-Host "RDP INFORMATION"
+          Write-Host "=========================================="
 
-          Start-Process `
-            -FilePath "mstsc.exe" `
-            -ArgumentList "/v:127.0.0.1 /f"
-
-          Write-Host "Waiting 100 seconds for RDP session..."
-
-          Start-Sleep -Seconds 100
+          Write-Host "Tailscale IP:"
+          Write-Host $env:TAILSCALE_IP
 
           Write-Host ""
-          Write-Host "=== QUSER ==="
-          quser
+          Write-Host "RDP Username:"
+          Write-Host $env:RDP_USERNAME
 
           Write-Host ""
-          Write-Host "=== QWINSTA ==="
-          qwinsta
+          Write-Host "RDP Port:"
+          Write-Host "3389"
+
+          Write-Host ""
+          Write-Host "Connect externally using:"
+          Write-Host "$env:TAILSCALE_IP`:3389"
+
+          Write-Host "=========================================="
 
       # ============================================================
-      # START CHROME
+      # DO NOT CREATE A LOCAL MSTSC SESSION
       # ============================================================
+      #
+      # IMPORTANT:
+      # We intentionally do NOT run mstsc.exe here.
+      #
+      # The GitHub runner already has an interactive Windows desktop.
+      # Opening a second RDP session from inside the runner can switch
+      # sessions/desktops and cause gdigrab/screenshot problems.
+      #
+      # External RDP users can connect through Tailscale while the
+      # workflow remains active.
+
+      - name: Verify interactive desktop
+        shell: powershell
+        run: |
+          Write-Host "=== Verifying Windows desktop ==="
+
+          Write-Host "USERNAME:"
+          $env:USERNAME
+
+          Write-Host ""
+          Write-Host "SESSIONNAME:"
+          $env:SESSIONNAME
+
+          Write-Host ""
+          Write-Host "SESSION ID:"
+
+          try {
+              $sessionOutput =
+                (qwinsta |
+                  Out-String)
+
+              Write-Host $sessionOutput
+          }
+          catch {
+              Write-Host "qwinsta failed: $($_.Exception.Message)"
+          }
+
+          Write-Host ""
+          Write-Host "Primary screen:"
+
+          Add-Type -AssemblyName System.Windows.Forms
+
+          $screen =
+            [System.Windows.Forms.Screen]::PrimaryScreen
+
+          if ($null -eq $screen) {
+              throw "Primary screen is null."
+          }
+
+          Write-Host "X=$($screen.Bounds.X)"
+          Write-Host "Y=$($screen.Bounds.Y)"
+          Write-Host "Width=$($screen.Bounds.Width)"
+          Write-Host "Height=$($screen.Bounds.Height)"
+
+      # ============================================================
+      # START CHROME DIRECTLY
+      # ============================================================
+
       - name: Start Chrome
         shell: powershell
         run: |
-          Write-Host "=== Starting Chrome task ==="
+          Write-Host "=== Starting Chrome directly ==="
 
-          $taskName = "OpenChromeAutomatically"
+          $chromePath = $env:CHROME_PATH
 
-          $task = Get-ScheduledTask `
-            -TaskName $taskName `
-            -ErrorAction SilentlyContinue
-
-          if (-not $task) {
-              throw "Chrome scheduled task does not exist."
+          if (-not $chromePath) {
+              throw "CHROME_PATH is empty."
           }
 
-          Start-ScheduledTask `
-            -TaskName $taskName
+          if (-not (Test-Path $chromePath)) {
+              throw "Chrome executable does not exist: $chromePath"
+          }
 
-          Write-Host "Chrome task started."
+          $chromeProfile =
+            "C:\temp\ChromeProfile"
 
-          Write-Host "Waiting for Chrome..."
+          $arguments = @(
+            "--no-first-run"
+            "--no-default-browser-check"
+            "--disable-session-crashed-bubble"
+            "--start-maximized"
+            "--new-window"
+            "--user-data-dir=$chromeProfile"
+            "https://github.com"
+          )
 
-          Start-Sleep -Seconds 15
+          Write-Host "Chrome arguments:"
+          $arguments | ForEach-Object {
+              Write-Host $_
+          }
+
+          $chromeProcess =
+            Start-Process `
+              -FilePath $chromePath `
+              -ArgumentList $arguments `
+              -PassThru
+
+          if ($null -eq $chromeProcess) {
+              throw "Chrome failed to start."
+          }
+
+          Write-Host "Chrome PID: $($chromeProcess.Id)"
+
+          Start-Sleep -Seconds 10
 
           Write-Host ""
           Write-Host "=== Chrome Processes ==="
 
-          $chromeProcesses = Get-Process chrome `
-            -ErrorAction SilentlyContinue
+          $chromeProcesses =
+            Get-Process chrome `
+              -ErrorAction SilentlyContinue
 
-          if ($chromeProcesses) {
-
-              $chromeProcesses |
-                Select-Object Id, ProcessName, MainWindowTitle |
-                Format-Table -AutoSize
-
-          }
-          else {
-              Write-Host "Chrome process not found."
+          if (-not $chromeProcesses) {
+              throw "Chrome process was not found after startup."
           }
 
+          $chromeProcesses |
+            Select-Object `
+              Id,
+              MainWindowHandle,
+              MainWindowTitle,
+              Responding |
+            Format-Table -AutoSize
+
       # ============================================================
-      # FFMPEG
+      # INSTALL FFMPEG
       # ============================================================
+
       - name: Install FFmpeg
         shell: powershell
         run: |
-          Write-Host "=== Installing FFmpeg ==="
+          Write-Host "=== Checking FFmpeg ==="
 
-          if (-not (Get-Command ffmpeg.exe -ErrorAction SilentlyContinue)) {
+          $ffmpeg =
+            Get-Command ffmpeg.exe `
+              -ErrorAction SilentlyContinue
+
+          if (-not $ffmpeg) {
+
+              Write-Host "FFmpeg not found."
+              Write-Host "Installing..."
 
               choco install ffmpeg -y --no-progress
 
               Start-Sleep -Seconds 5
           }
 
-          if (-not (Get-Command ffmpeg.exe -ErrorAction SilentlyContinue)) {
-              throw "FFmpeg was not found."
+          $ffmpeg =
+            Get-Command ffmpeg.exe `
+              -ErrorAction SilentlyContinue
+
+          if (-not $ffmpeg) {
+              throw "FFmpeg was not found after installation."
           }
 
-          Write-Host "=== FFmpeg ==="
-          ffmpeg -version | Select-Object -First 3
+          Write-Host ""
+          Write-Host "FFmpeg:"
+          Write-Host $ffmpeg.Source
+
+          ffmpeg -version |
+            Select-Object -First 3
+
+          $ffprobe =
+            Get-Command ffprobe.exe `
+              -ErrorAction SilentlyContinue
+
+          if ($ffprobe) {
+              Write-Host ""
+              Write-Host "FFprobe:"
+              Write-Host $ffprobe.Source
+          }
 
       # ============================================================
-      # RECORDING SCRIPT
+      # PREPARE RECORDER
       # ============================================================
-      - name: Install recording script
+
+      - name: Prepare recording files
         shell: powershell
         run: |
-          Write-Host "=== Installing recording script ==="
+          Write-Host "=== Preparing recording ==="
 
           New-Item `
             -ItemType Directory `
@@ -433,15 +598,19 @@ jobs:
             -Force |
             Out-Null
 
-          if (-not (Test-Path "scripts\record.ps1")) {
-              throw "scripts\record.ps1 was not found."
+          $requiredScript =
+            "scripts\record.ps1"
+
+          if (-not (Test-Path $requiredScript)) {
+              throw "$requiredScript was not found."
           }
 
           Copy-Item `
-            "scripts\record.ps1" `
+            $requiredScript `
             "C:\temp\RDPClickAndRecord.ps1" `
             -Force
 
+          # Validate syntax before execution
           $tokens = $null
           $errors = $null
 
@@ -453,240 +622,145 @@ jobs:
 
           if ($errors.Count -gt 0) {
 
-              Write-Host "Parser errors:"
+              Write-Host "=== POWERSHELL PARSE ERRORS ==="
 
-              foreach ($e in $errors) {
-                  Write-Host $e.ToString()
+              foreach ($errorItem in $errors) {
+                  Write-Host $errorItem.ToString()
               }
 
-              throw "Recording script contains syntax errors."
+              throw "Recording script contains PowerShell syntax errors."
           }
 
-          Write-Host "Recording script parser: OK"
+          Write-Host "Recording script syntax: OK"
 
       # ============================================================
-      # LAUNCHER
+      # START RECORDING DIRECTLY
       # ============================================================
-      - name: Create recording launcher
+
+      - name: Run recording script
         shell: powershell
+        env:
+          CLICK_X: "84"
+          CLICK_Y: "614"
         run: |
-          Write-Host "=== Creating launcher ==="
+          Write-Host "=========================================="
+          Write-Host "STARTING CLICK RECORDING"
+          Write-Host "=========================================="
 
-          $launcher =
-            "@echo off`r`n" +
-            "echo TASK STARTED > C:\temp\task-started.txt`r`n" +
-            "echo [%date% %time%] Launcher started >> C:\temp\task-launcher.log`r`n" +
-            "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"C:\temp\RDPClickAndRecord.ps1`" >> C:\temp\task-powershell-output.log 2>&1`r`n" +
-            "echo [%date% %time%] PowerShell exit code: %ERRORLEVEL% >> C:\temp\task-launcher.log`r`n" +
-            "exit /b %ERRORLEVEL%"
+          $scriptPath =
+            "C:\temp\RDPClickAndRecord.ps1"
 
-          Set-Content `
-            -Path "C:\temp\record-launcher.cmd" `
-            -Value $launcher `
-            -Encoding ASCII
-
-          Write-Host "Launcher created."
-
-      # ============================================================
-      # RECORDING TASK
-      # ============================================================
-      - name: Create recording task
-        shell: powershell
-        run: |
-          Write-Host "=== Creating recording task ==="
-
-          $taskName = "RDPClickAndRecord"
-          $launcher = "C:\temp\record-launcher.cmd"
-
-          if (-not (Test-Path $launcher)) {
-              throw "Launcher not found."
+          if (-not (Test-Path $scriptPath)) {
+              throw "Recording script not found."
           }
 
-          $oldTask = Get-ScheduledTask `
-            -TaskName $taskName `
-            -ErrorAction SilentlyContinue
+          powershell.exe `
+            -NoProfile `
+            -ExecutionPolicy Bypass `
+            -File $scriptPath
 
-          if ($oldTask) {
-
-              Write-Host "Removing old recording task..."
-
-              Unregister-ScheduledTask `
-                -TaskName $taskName `
-                -Confirm:$false `
-                -ErrorAction SilentlyContinue
-          }
-
-          $action = New-ScheduledTaskAction `
-            -Execute "C:\Windows\System32\cmd.exe" `
-            -Argument "/c `"$launcher`""
-
-          $trigger = New-ScheduledTaskTrigger `
-            -AtLogOn `
-            -User "runneradmin"
-
-          $principal = New-ScheduledTaskPrincipal `
-            -UserId "runneradmin" `
-            -LogonType Interactive `
-            -RunLevel Highest
-
-          $settings = New-ScheduledTaskSettingsSet `
-            -AllowStartIfOnBatteries `
-            -DontStopIfGoingOnBatteries `
-            -StartWhenAvailable
-
-          Register-ScheduledTask `
-            -TaskName $taskName `
-            -Action $action `
-            -Trigger $trigger `
-            -Principal $principal `
-            -Settings $settings `
-            -Force
+          $exitCode = $LASTEXITCODE
 
           Write-Host ""
-          Write-Host "Recording task created successfully."
+          Write-Host "Recording script exit code: $exitCode"
 
-          Get-ScheduledTask `
-            -TaskName $taskName |
-            Format-List TaskName, State, TaskPath
-
-      # ============================================================
-      # RUN RECORDING
-      # ============================================================
-      - name: Run recording task
-        shell: powershell
-        run: |
-          Write-Host "=== Running recording task ==="
-
-          $taskName = "RDPClickAndRecord"
-
-          Remove-Item `
-            "C:\temp\task-started.txt",
-            "C:\temp\task-launcher.log",
-            "C:\temp\task-powershell-output.log",
-            "C:\temp\click-record.log",
-            "C:\temp\rdp-click-video.mp4",
-            "C:\temp\rdp-click-screenshot.png" `
-            -Force `
-            -ErrorAction SilentlyContinue
-
-          $task = Get-ScheduledTask `
-            -TaskName $taskName `
-            -ErrorAction SilentlyContinue
-
-          if (-not $task) {
-              throw "Recording task does not exist."
+          if ($exitCode -ne 0) {
+              throw "Recording script failed with exit code $exitCode."
           }
-
-          Start-ScheduledTask `
-            -TaskName $taskName
-
-          Write-Host "Recording task started."
-
-          Write-Host "Waiting 25 seconds..."
-
-          Start-Sleep -Seconds 25
-
-          Write-Host ""
-          Write-Host "=== Recording Task Status ==="
-
-          Get-ScheduledTask `
-            -TaskName $taskName |
-            Format-List TaskName, State, TaskPath
-
-          Write-Host ""
-          Write-Host "=== C:\temp ==="
-
-          Get-ChildItem "C:\temp" `
-            -ErrorAction SilentlyContinue |
-            Select-Object Name, Length, LastWriteTime |
-            Sort-Object LastWriteTime -Descending |
-            Format-Table -AutoSize
 
       # ============================================================
       # DEBUG
       # ============================================================
-      - name: Debug outputs
+
+      - name: Debug recording outputs
         if: always()
         shell: powershell
         run: |
-          Write-Host "=== Debug outputs ==="
+          Write-Host "=========================================="
+          Write-Host "DEBUG OUTPUTS"
+          Write-Host "=========================================="
 
           $files = @(
               "C:\temp\rdp-click-screenshot.png",
               "C:\temp\rdp-click-video.mp4",
               "C:\temp\click-record.log",
-              "C:\temp\task-started.txt",
-              "C:\temp\task-launcher.log",
-              "C:\temp\task-powershell-output.log",
               "C:\temp\ffmpeg-output.log",
-              "C:\temp\ffmpeg-error.log"
+              "C:\temp\ffmpeg-error.log",
+              "C:\temp\RDPClickAndRecord.ps1"
           )
 
-          foreach ($p in $files) {
+          foreach ($path in $files) {
 
-              if (Test-Path $p) {
+              if (Test-Path $path) {
 
-                  $f = Get-Item $p
+                  $item =
+                    Get-Item $path
 
-                  Write-Host "FOUND $p ($($f.Length) bytes)"
+                  Write-Host ""
+                  Write-Host "FOUND:"
+                  Write-Host $path
+                  Write-Host "Size: $($item.Length) bytes"
 
               }
               else {
 
-                  Write-Host "NOT FOUND $p"
+                  Write-Host ""
+                  Write-Host "NOT FOUND:"
+                  Write-Host $path
 
               }
           }
 
+          Write-Host ""
+          Write-Host "=========================================="
+          Write-Host "TEMP DIRECTORY"
+          Write-Host "=========================================="
+
+          Get-ChildItem `
+            "C:\temp" `
+            -Force `
+            -ErrorAction SilentlyContinue |
+            Select-Object Name, Length, LastWriteTime |
+            Sort-Object LastWriteTime -Descending |
+            Format-Table -AutoSize
+
           if (Test-Path "C:\temp\click-record.log") {
-              Write-Host "--- click-record.log ---"
-              Get-Content "C:\temp\click-record.log"
-          }
 
-          if (Test-Path "C:\temp\task-launcher.log") {
-              Write-Host "--- task-launcher.log ---"
-              Get-Content "C:\temp\task-launcher.log"
-          }
+              Write-Host ""
+              Write-Host "=========================================="
+              Write-Host "click-record.log"
+              Write-Host "=========================================="
 
-          if (Test-Path "C:\temp\task-powershell-output.log") {
-              Write-Host "--- task-powershell-output.log ---"
-              Get-Content "C:\temp\task-powershell-output.log"
+              Get-Content `
+                "C:\temp\click-record.log"
           }
 
           if (Test-Path "C:\temp\ffmpeg-error.log") {
-              Write-Host "--- ffmpeg-error.log ---"
-              Get-Content "C:\temp\ffmpeg-error.log"
+
+              Write-Host ""
+              Write-Host "=========================================="
+              Write-Host "ffmpeg-error.log"
+              Write-Host "=========================================="
+
+              Get-Content `
+                "C:\temp\ffmpeg-error.log"
           }
 
       # ============================================================
-      # ARTIFACTS
+      # UPLOAD EVERYTHING
       # ============================================================
-      - name: Upload Screenshot
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: rdp-click-screenshot
-          path: C:\temp\rdp-click-screenshot.png
-          if-no-files-found: warn
 
-      - name: Upload Video
+      - name: Upload all RDP recording outputs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: rdp-click-video
-          path: C:\temp\rdp-click-video.mp4
-          if-no-files-found: warn
-
-      - name: Upload Debug Logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: rdp-debug-logs
+          name: rdp-record-output
           path: |
+            C:\temp\rdp-click-screenshot.png
+            C:\temp\rdp-click-video.mp4
             C:\temp\click-record.log
-            C:\temp\task-started.txt
-            C:\temp\task-launcher.log
-            C:\temp\task-powershell-output.log
             C:\temp\ffmpeg-output.log
             C:\temp\ffmpeg-error.log
+            C:\temp\RDPClickAndRecord.ps1
           if-no-files-found: warn
+          retention-days: 7
