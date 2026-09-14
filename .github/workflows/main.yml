@@ -10,8 +10,15 @@ jobs:
 
     env:
       RDP_USERNAME: runneradmin
-      RDP_PASSWORD: "RdpAccess#2026X"
 
+      # ============================================================
+      # پسورد RDP را اینجا وارد کن
+      # ============================================================
+      RDP_PASSWORD: "YOUR_RDP_PASSWORD_HERE"
+
+      # ============================================================
+      # مختصات کلیک
+      # ============================================================
       CLICK_X: "84"
       CLICK_Y: "614"
 
@@ -25,7 +32,7 @@ jobs:
         uses: actions/checkout@v7
 
       # ============================================================
-      # BASIC INFORMATION
+      # RUNNER INFORMATION
       # ============================================================
 
       - name: Show runner information
@@ -98,6 +105,10 @@ jobs:
           Write-Host "Username: $username"
           Write-Host "Password: $password"
 
+          # ==========================================================
+          # PASSWORD
+          # ==========================================================
+
           $securePassword = ConvertTo-SecureString `
             $password `
             -AsPlainText `
@@ -124,13 +135,17 @@ jobs:
                 -ErrorAction Stop
 
               try {
+
                   Set-LocalUser `
                     -Name $username `
                     -PasswordNeverExpires $true `
                     -ErrorAction Stop
+
               }
               catch {
+
                   Write-Host "PasswordNeverExpires update skipped."
+                  Write-Host $_.Exception.Message
               }
 
               Write-Host "Password updated successfully."
@@ -156,15 +171,18 @@ jobs:
           # ADMINISTRATORS
           # ==========================================================
 
-          $adminCheck =
+          Write-Host ""
+          Write-Host "Checking Administrators membership..."
+
+          $adminMember =
             Get-LocalGroupMember `
               -Group "Administrators" `
               -ErrorAction SilentlyContinue |
             Where-Object {
-                $_.Name -match "\\$([regex]::Escape($username))$"
+              $_.Name -match "\\$([regex]::Escape($username))$"
             }
 
-          if ($null -eq $adminCheck) {
+          if ($null -eq $adminMember) {
 
               Add-LocalGroupMember `
                 -Group "Administrators" `
@@ -172,7 +190,6 @@ jobs:
                 -ErrorAction Stop
 
               Write-Host "Added to Administrators."
-
           }
           else {
 
@@ -183,15 +200,18 @@ jobs:
           # REMOTE DESKTOP USERS
           # ==========================================================
 
-          $rdpCheck =
+          Write-Host ""
+          Write-Host "Checking Remote Desktop Users membership..."
+
+          $rdpMember =
             Get-LocalGroupMember `
               -Group "Remote Desktop Users" `
               -ErrorAction SilentlyContinue |
             Where-Object {
-                $_.Name -match "\\$([regex]::Escape($username))$"
+              $_.Name -match "\\$([regex]::Escape($username))$"
             }
 
-          if ($null -eq $rdpCheck) {
+          if ($null -eq $rdpMember) {
 
               Add-LocalGroupMember `
                 -Group "Remote Desktop Users" `
@@ -199,7 +219,6 @@ jobs:
                 -ErrorAction Stop
 
               Write-Host "Added to Remote Desktop Users."
-
           }
           else {
 
@@ -230,7 +249,8 @@ jobs:
           # FIREWALL
           # ==========================================================
 
-          Write-Host "Enabling Remote Desktop firewall..."
+          Write-Host ""
+          Write-Host "Enabling Remote Desktop firewall rules..."
 
           Get-NetFirewallRule `
             -DisplayGroup "Remote Desktop" `
@@ -242,6 +262,7 @@ jobs:
           # TERMSERVICE
           # ==========================================================
 
+          Write-Host ""
           Write-Host "Configuring TermService..."
 
           Set-Service `
@@ -250,7 +271,8 @@ jobs:
             -ErrorAction Stop
 
           $termService =
-            Get-Service -Name "TermService"
+            Get-Service `
+              -Name "TermService"
 
           if ($termService.Status -eq "Running") {
 
@@ -270,7 +292,8 @@ jobs:
           Start-Sleep -Seconds 4
 
           $termService =
-            Get-Service -Name "TermService"
+            Get-Service `
+              -Name "TermService"
 
           Write-Host ""
           Write-Host "=========================================="
@@ -332,7 +355,7 @@ jobs:
           }
 
           if (-not (Test-Path $tailscaleExe)) {
-              throw "Tailscale executable not found."
+              throw "Tailscale executable was not found."
           }
 
           Write-Host "Connecting Tailscale..."
@@ -582,7 +605,7 @@ jobs:
             [System.Windows.Forms.Screen]::PrimaryScreen
 
           if ($null -eq $screen) {
-              throw "Primary screen is null."
+              throw "PrimaryScreen is null."
           }
 
           Write-Host ""
@@ -600,11 +623,11 @@ jobs:
         shell: powershell
         run: |
 
+          $ErrorActionPreference = "Stop"
+
           Write-Host "=========================================="
           Write-Host "MINIMIZING ALL WINDOWS"
           Write-Host "=========================================="
-
-          Add-Type -AssemblyName Microsoft.VisualBasic
 
           try {
 
@@ -613,20 +636,21 @@ jobs:
 
               $shell.MinimizeAll()
 
-              Write-Host "All existing windows minimized."
+              Write-Host "All windows minimized successfully."
 
           }
           catch {
 
-              Write-Host "Shell MinimizeAll failed."
+              Write-Host "MinimizeAll failed."
               Write-Host $_.Exception.Message
 
-              # Fallback: Win+D
+              Write-Host "Using Win+D fallback..."
+
               Add-Type @"
           using System;
           using System.Runtime.InteropServices;
 
-          public static class DesktopKeys
+          public static class DesktopShortcut
           {
               [DllImport("user32.dll")]
               public static extern void keybd_event(
@@ -642,40 +666,38 @@ jobs:
           }
           "@
 
-              [DesktopKeys]::keybd_event(
-                  [DesktopKeys]::VK_LWIN,
+              [DesktopShortcut]::keybd_event(
+                  [DesktopShortcut]::VK_LWIN,
                   0,
                   0,
                   [UIntPtr]::Zero
               )
 
-              [DesktopKeys]::keybd_event(
-                  [DesktopKeys]::VK_D,
+              [DesktopShortcut]::keybd_event(
+                  [DesktopShortcut]::VK_D,
                   0,
                   0,
                   [UIntPtr]::Zero
               )
 
-              [DesktopKeys]::keybd_event(
-                  [DesktopKeys]::VK_D,
+              [DesktopShortcut]::keybd_event(
+                  [DesktopShortcut]::VK_D,
                   0,
-                  [DesktopKeys]::KEYEVENTF_KEYUP,
+                  [DesktopShortcut]::KEYEVENTF_KEYUP,
                   [UIntPtr]::Zero
               )
 
-              [DesktopKeys]::keybd_event(
-                  [DesktopKeys]::VK_LWIN,
+              [DesktopShortcut]::keybd_event(
+                  [DesktopShortcut]::VK_LWIN,
                   0,
-                  [DesktopKeys]::KEYEVENTF_KEYUP,
+                  [DesktopShortcut]::KEYEVENTF_KEYUP,
                   [UIntPtr]::Zero
               )
-
-              Write-Host "Win+D fallback executed."
           }
 
           Start-Sleep -Seconds 2
 
-          Write-Host "Desktop prepared."
+          Write-Host "Desktop is clean."
 
       # ============================================================
       # START CHROME MAXIMIZED
@@ -688,7 +710,7 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           Write-Host "=========================================="
-          Write-Host "STARTING CHROME MAXIMIZED"
+          Write-Host "STARTING CHROME"
           Write-Host "=========================================="
 
           $chromePath =
@@ -734,13 +756,12 @@ jobs:
               throw "Chrome failed to start."
           }
 
-          Write-Host "Chrome PID:"
-          Write-Host $chromeProcess.Id
+          Write-Host "Chrome PID: $($chromeProcess.Id)"
 
           Start-Sleep -Seconds 8
 
           # ==========================================================
-          # FORCE CHROME TO FRONT + MAXIMIZED
+          # FORCE MAXIMIZED + FOREGROUND
           # ==========================================================
 
           Add-Type @"
@@ -768,7 +789,7 @@ jobs:
             Get-Process chrome `
               -ErrorAction SilentlyContinue |
             Where-Object {
-                $_.MainWindowHandle -ne 0
+              $_.MainWindowHandle -ne 0
             } |
             Sort-Object StartTime -Descending |
             Select-Object -First 1
@@ -778,9 +799,6 @@ jobs:
           }
 
           Write-Host ""
-          Write-Host "Chrome PID:"
-          Write-Host $chromeWindow.Id
-
           Write-Host "Chrome HWND:"
           Write-Host $chromeWindow.MainWindowHandle
 
@@ -797,23 +815,21 @@ jobs:
 
           Start-Sleep -Seconds 2
 
-          Write-Host ""
-          Write-Host "Chrome is maximized and foreground."
+          Write-Host "Chrome is maximized and in foreground."
+
+          # ==========================================================
+          # FINAL MAXIMIZE CHECK
+          # ==========================================================
+
+          $chromeWindow.Refresh()
 
           Write-Host ""
-          Write-Host "Chrome windows:"
-
-          Get-Process chrome `
-            -ErrorAction SilentlyContinue |
-            Select-Object `
-              Id,
-              MainWindowHandle,
-              MainWindowTitle,
-              Responding |
-            Format-Table -AutoSize
+          Write-Host "Chrome Window:"
+          Write-Host "Title: $($chromeWindow.MainWindowTitle)"
+          Write-Host "Handle: $($chromeWindow.MainWindowHandle)"
 
       # ============================================================
-      # FFMPEG
+      # INSTALL FFMPEG
       # ============================================================
 
       - name: Install FFmpeg
@@ -849,6 +865,15 @@ jobs:
 
           Write-Host "FFmpeg:"
           Write-Host $ffmpeg.Source
+
+          $ffprobe =
+            Get-Command ffprobe.exe `
+              -ErrorAction SilentlyContinue
+
+          if ($ffprobe) {
+              Write-Host "FFprobe:"
+              Write-Host $ffprobe.Source
+          }
 
       # ============================================================
       # CREATE RECORDING SCRIPT
@@ -888,6 +913,7 @@ jobs:
                   "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff')  $text"
 
               Write-Host $line
+
               Add-Content `
                 -Path $logFile `
                 -Value $line
@@ -950,7 +976,7 @@ jobs:
               [int]$env:CLICK_Y
 
           Log "=========================================="
-          Log "CLICK RECORDING"
+          Log "DOUBLE CLICK RECORDING"
           Log "=========================================="
 
           Log "CLICK_X = $x"
@@ -1004,7 +1030,7 @@ jobs:
           }
 
           # ==========================================================
-          # FIND CHROME WINDOW
+          # FIND CHROME
           # ==========================================================
 
           Log "Finding Chrome window..."
@@ -1037,7 +1063,7 @@ jobs:
           Log "Chrome HWND = $($chromeWindow.MainWindowHandle)"
 
           # ==========================================================
-          # FORCE MAXIMIZED + FOREGROUND AGAIN
+          # FORCE CHROME MAXIMIZED
           # ==========================================================
 
           [NativeMouse]::ShowWindow(
@@ -1063,10 +1089,8 @@ jobs:
           Log "Chrome maximized and activated."
 
           # ==========================================================
-          # START FFMPEG
+          # CLEAN FILES
           # ==========================================================
-
-          Log "Starting FFmpeg..."
 
           Remove-Item `
             $videoFile `
@@ -1088,6 +1112,12 @@ jobs:
             -Force `
             -ErrorAction SilentlyContinue
 
+          # ==========================================================
+          # START FFMPEG
+          # ==========================================================
+
+          Log "Starting 20 second FFmpeg recording..."
+
           $ffmpegArgs = @(
               "-y"
               "-f"
@@ -1099,7 +1129,7 @@ jobs:
               "-i"
               "desktop"
               "-t"
-              "15"
+              "20"
               "-c:v"
               "libx264"
               "-preset"
@@ -1120,47 +1150,149 @@ jobs:
           Log "FFmpeg PID = $($ffmpegProcess.Id)"
 
           # ==========================================================
-          # WAIT
+          # 5 SECONDS BEFORE CLICK #1
           # ==========================================================
 
-          Log "Waiting 5 seconds..."
+          Log "Waiting 5 seconds before CLICK #1..."
 
           Start-Sleep -Seconds 5
 
           # ==========================================================
-          # MOVE TO CLICK POSITION
+          # CLICK FUNCTION
           # ==========================================================
 
-          Log "Moving mouse to X=$x Y=$y"
+          function Perform-Click {
 
-          $result =
-              [NativeMouse]::SetCursorPos(
-                  $x,
-                  $y
+              param(
+                  [int]$X,
+                  [int]$Y,
+                  [string]$Label
               )
 
-          if (-not $result) {
-              throw "SetCursorPos failed."
+              Log "=========================================="
+              Log "$Label"
+              Log "=========================================="
+
+              Log "Moving mouse to X=$X Y=$Y"
+
+              $result =
+                  [NativeMouse]::SetCursorPos(
+                      $X,
+                      $Y
+                  )
+
+              if (-not $result) {
+                  throw "SetCursorPos failed."
+              }
+
+              Start-Sleep -Milliseconds 500
+
+              $cursor =
+                  [System.Windows.Forms.Cursor]::Position
+
+              Log "Actual cursor:"
+              Log "X=$($cursor.X)"
+              Log "Y=$($cursor.Y)"
+
+              # -------------------------------------------------------
+              # LEFT DOWN
+              # -------------------------------------------------------
+
+              [NativeMouse]::mouse_event(
+                  [NativeMouse]::MOUSEEVENTF_LEFTDOWN,
+                  0,
+                  0,
+                  0,
+                  [UIntPtr]::Zero
+              )
+
+              Start-Sleep -Milliseconds 150
+
+              # -------------------------------------------------------
+              # LEFT UP
+              # -------------------------------------------------------
+
+              [NativeMouse]::mouse_event(
+                  [NativeMouse]::MOUSEEVENTF_LEFTUP,
+                  0,
+                  0,
+                  0,
+                  [UIntPtr]::Zero
+              )
+
+              Log "$Label SENT."
           }
 
-          Start-Sleep -Milliseconds 800
-
           # ==========================================================
-          # VERIFY CURSOR
+          # CLICK #1
           # ==========================================================
 
-          $cursor =
-              [System.Windows.Forms.Cursor]::Position
-
-          Log "Actual cursor position:"
-          Log "X=$($cursor.X)"
-          Log "Y=$($cursor.Y)"
+          Perform-Click `
+            -X $x `
+            -Y $y `
+            -Label "CLICK #1"
 
           # ==========================================================
-          # SCREENSHOT
+          # WAIT 5 SECONDS
           # ==========================================================
 
-          Log "Creating screenshot..."
+          Log "Waiting 5 seconds after CLICK #1..."
+
+          Start-Sleep -Seconds 5
+
+          # ==========================================================
+          # CLICK #2
+          # ==========================================================
+
+          Perform-Click `
+            -X $x `
+            -Y $y `
+            -Label "CLICK #2"
+
+          # ==========================================================
+          # WAIT 10 SECONDS
+          # ==========================================================
+
+          Log "Waiting 10 seconds after CLICK #2..."
+
+          Start-Sleep -Seconds 10
+
+          # ==========================================================
+          # WAIT FOR FFMPEG
+          # ==========================================================
+
+          Log "Waiting for FFmpeg to finish..."
+
+          if (-not $ffmpegProcess.HasExited) {
+              $ffmpegProcess.WaitForExit()
+          }
+
+          Log "FFmpeg exit code = $($ffmpegProcess.ExitCode)"
+
+          # ==========================================================
+          # VIDEO MUST END BEFORE SCREENSHOT
+          # ==========================================================
+
+          if (-not (Test-Path $videoFile)) {
+              throw "Video file was not created."
+          }
+
+          $videoSize =
+              (Get-Item $videoFile).Length
+
+          Log "Video size = $videoSize bytes"
+
+          if ($videoSize -le 1000) {
+              throw "Video file is too small."
+          }
+
+          # ==========================================================
+          # FINAL SCREENSHOT AFTER VIDEO END
+          # ==========================================================
+
+          Log "=========================================="
+          Log "TAKING FINAL SCREENSHOT"
+          Log "=========================================="
 
           $bitmap =
               New-Object System.Drawing.Bitmap(
@@ -1228,90 +1360,23 @@ jobs:
           $graphics.Dispose()
           $bitmap.Dispose()
 
-          Log "Screenshot saved."
+          Log "Final screenshot saved."
 
           # ==========================================================
-          # REAL LEFT CLICK
+          # SCREENSHOT VALIDATION
           # ==========================================================
-
-          Log "=========================================="
-          Log "SENDING REAL LEFT CLICK"
-          Log "=========================================="
-
-          [NativeMouse]::SetCursorPos(
-              $x,
-              $y
-          ) | Out-Null
-
-          Start-Sleep -Milliseconds 300
-
-          # LEFT DOWN
-          [NativeMouse]::mouse_event(
-              [NativeMouse]::MOUSEEVENTF_LEFTDOWN,
-              0,
-              0,
-              0,
-              [UIntPtr]::Zero
-          )
-
-          Start-Sleep -Milliseconds 150
-
-          # LEFT UP
-          [NativeMouse]::mouse_event(
-              [NativeMouse]::MOUSEEVENTF_LEFTUP,
-              0,
-              0,
-              0,
-              [UIntPtr]::Zero
-          )
-
-          Log "LEFT CLICK SENT."
-
-          # ==========================================================
-          # CONTINUE RECORDING
-          # ==========================================================
-
-          Start-Sleep -Seconds 7
-
-          # ==========================================================
-          # WAIT FOR FFMPEG
-          # ==========================================================
-
-          Log "Waiting for FFmpeg..."
-
-          if (-not $ffmpegProcess.HasExited) {
-              $ffmpegProcess.WaitForExit()
-          }
-
-          Log "FFmpeg exit code = $($ffmpegProcess.ExitCode)"
-
-          # ==========================================================
-          # VALIDATE FILES
-          # ==========================================================
-
-          if (-not (Test-Path $videoFile)) {
-              throw "Video was not created."
-          }
 
           if (-not (Test-Path $screenshotFile)) {
               throw "Screenshot was not created."
           }
 
-          $videoSize =
-              (Get-Item $videoFile).Length
-
           $screenshotSize =
               (Get-Item $screenshotFile).Length
 
-          Log "Video size = $videoSize bytes"
           Log "Screenshot size = $screenshotSize bytes"
 
-          if ($videoSize -le 1000) {
-              throw "Video is too small."
-          }
-
           if ($screenshotSize -le 1000) {
-              throw "Screenshot is too small."
+              throw "Screenshot file is too small."
           }
 
           # ==========================================================
@@ -1324,26 +1389,19 @@ jobs:
 
           if ($null -ne $ffprobe) {
 
-              $probe =
+              $duration =
                   & ffprobe `
                     -v error `
                     -show_entries format=duration `
                     -of default=noprint_wrappers=1:nokey=1 `
                     $videoFile 2>&1
 
-              Log "Video duration = $probe"
+              Log "Video duration = $duration"
           }
 
           Log "=========================================="
-          Log "RECORDING COMPLETED SUCCESSFULLY"
+          Log "ALL OPERATIONS COMPLETED"
           Log "=========================================="
-
-          '@ |
-            Set-Content `
-              -Path "C:\temp\RDPClickAndRecord.ps1" `
-              -Encoding UTF8
-
-          Write-Host "Recording script created."
 
       # ============================================================
       # RUN RECORDING
@@ -1359,7 +1417,7 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           Write-Host "=========================================="
-          Write-Host "STARTING CLICK RECORDING"
+          Write-Host "RUNNING RECORDING"
           Write-Host "=========================================="
 
           Write-Host "CLICK_X = $env:CLICK_X"
