@@ -10,17 +10,8 @@ jobs:
 
     env:
       RDP_USERNAME: runneradmin
-
-      # ============================================================
-      # RDP PASSWORD
-      # این مقدار را با پسورد خودت عوض کن.
-      # باید شامل حروف بزرگ/کوچک + عدد + کاراکتر ویژه باشد.
-      # ============================================================
       RDP_PASSWORD: "RdpAccess#2026X"
 
-      # ============================================================
-      # CLICK COORDINATES
-      # ============================================================
       CLICK_X: "84"
       CLICK_Y: "614"
 
@@ -60,7 +51,7 @@ jobs:
           $PSVersionTable
 
       # ============================================================
-      # SHOW RDP LOGIN
+      # RDP LOGIN
       # ============================================================
 
       - name: Show RDP login
@@ -107,36 +98,19 @@ jobs:
           Write-Host "Username: $username"
           Write-Host "Password: $password"
 
-          # ----------------------------------------------------------
-          # Convert password
-          # ----------------------------------------------------------
-
           $securePassword = ConvertTo-SecureString `
             $password `
             -AsPlainText `
             -Force
 
-          # ----------------------------------------------------------
-          # Check password policy
-          # ----------------------------------------------------------
+          # ==========================================================
+          # CREATE / UPDATE USER
+          # ==========================================================
 
-          Write-Host ""
-          Write-Host "Checking local password policy..."
-
-          try {
-              net accounts
-          }
-          catch {
-              Write-Host "Could not read password policy."
-          }
-
-          # ----------------------------------------------------------
-          # Create or update user
-          # ----------------------------------------------------------
-
-          $existingUser = Get-LocalUser `
-            -Name $username `
-            -ErrorAction SilentlyContinue
+          $existingUser =
+            Get-LocalUser `
+              -Name $username `
+              -ErrorAction SilentlyContinue
 
           if ($null -ne $existingUser) {
 
@@ -157,10 +131,10 @@ jobs:
               }
               catch {
                   Write-Host "PasswordNeverExpires update skipped."
-                  Write-Host $_.Exception.Message
               }
 
               Write-Host "Password updated successfully."
+
           }
           else {
 
@@ -178,21 +152,19 @@ jobs:
               Write-Host "User created successfully."
           }
 
-          # ----------------------------------------------------------
-          # Administrators
-          # ----------------------------------------------------------
+          # ==========================================================
+          # ADMINISTRATORS
+          # ==========================================================
 
-          Write-Host ""
-          Write-Host "Checking Administrators membership..."
-
-          $adminMember = Get-LocalGroupMember `
-            -Group "Administrators" `
-            -ErrorAction SilentlyContinue |
+          $adminCheck =
+            Get-LocalGroupMember `
+              -Group "Administrators" `
+              -ErrorAction SilentlyContinue |
             Where-Object {
                 $_.Name -match "\\$([regex]::Escape($username))$"
             }
 
-          if ($null -eq $adminMember) {
+          if ($null -eq $adminCheck) {
 
               Add-LocalGroupMember `
                 -Group "Administrators" `
@@ -200,27 +172,26 @@ jobs:
                 -ErrorAction Stop
 
               Write-Host "Added to Administrators."
+
           }
           else {
 
               Write-Host "Already in Administrators."
           }
 
-          # ----------------------------------------------------------
-          # Remote Desktop Users
-          # ----------------------------------------------------------
+          # ==========================================================
+          # REMOTE DESKTOP USERS
+          # ==========================================================
 
-          Write-Host ""
-          Write-Host "Checking Remote Desktop Users membership..."
-
-          $rdpMember = Get-LocalGroupMember `
-            -Group "Remote Desktop Users" `
-            -ErrorAction SilentlyContinue |
+          $rdpCheck =
+            Get-LocalGroupMember `
+              -Group "Remote Desktop Users" `
+              -ErrorAction SilentlyContinue |
             Where-Object {
                 $_.Name -match "\\$([regex]::Escape($username))$"
             }
 
-          if ($null -eq $rdpMember) {
+          if ($null -eq $rdpCheck) {
 
               Add-LocalGroupMember `
                 -Group "Remote Desktop Users" `
@@ -228,15 +199,16 @@ jobs:
                 -ErrorAction Stop
 
               Write-Host "Added to Remote Desktop Users."
+
           }
           else {
 
               Write-Host "Already in Remote Desktop Users."
           }
 
-          # ----------------------------------------------------------
-          # Enable RDP
-          # ----------------------------------------------------------
+          # ==========================================================
+          # ENABLE RDP
+          # ==========================================================
 
           Write-Host ""
           Write-Host "Enabling RDP..."
@@ -254,12 +226,11 @@ jobs:
             -Value 1 `
             -Force
 
-          # ----------------------------------------------------------
-          # Firewall
-          # ----------------------------------------------------------
+          # ==========================================================
+          # FIREWALL
+          # ==========================================================
 
-          Write-Host ""
-          Write-Host "Enabling Remote Desktop firewall rules..."
+          Write-Host "Enabling Remote Desktop firewall..."
 
           Get-NetFirewallRule `
             -DisplayGroup "Remote Desktop" `
@@ -267,11 +238,10 @@ jobs:
             Enable-NetFirewallRule `
             -ErrorAction SilentlyContinue
 
-          # ----------------------------------------------------------
-          # TermService
-          # ----------------------------------------------------------
+          # ==========================================================
+          # TERMSERVICE
+          # ==========================================================
 
-          Write-Host ""
           Write-Host "Configuring TermService..."
 
           Set-Service `
@@ -288,6 +258,7 @@ jobs:
                 -Name "TermService" `
                 -Force `
                 -ErrorAction Stop
+
           }
           else {
 
@@ -361,7 +332,7 @@ jobs:
           }
 
           if (-not (Test-Path $tailscaleExe)) {
-              throw "Tailscale executable was not found."
+              throw "Tailscale executable not found."
           }
 
           Write-Host "Connecting Tailscale..."
@@ -498,7 +469,7 @@ jobs:
           Write-Host "Chrome policies configured."
 
       # ============================================================
-      # CHROME PROFILE
+      # PREPARE CHROME PROFILE
       # ============================================================
 
       - name: Prepare Chrome profile
@@ -537,7 +508,7 @@ jobs:
           Write-Host "Chrome profile ready."
 
       # ============================================================
-      # RDP INFO
+      # RDP INFORMATION
       # ============================================================
 
       - name: Show RDP connection information
@@ -611,7 +582,7 @@ jobs:
             [System.Windows.Forms.Screen]::PrimaryScreen
 
           if ($null -eq $screen) {
-              throw "PrimaryScreen is null."
+              throw "Primary screen is null."
           }
 
           Write-Host ""
@@ -622,17 +593,102 @@ jobs:
           Write-Host "Height=$($screen.Bounds.Height)"
 
       # ============================================================
-      # START CHROME
+      # MINIMIZE EVERYTHING
       # ============================================================
 
-      - name: Start Chrome
+      - name: Minimize all existing windows
+        shell: powershell
+        run: |
+
+          Write-Host "=========================================="
+          Write-Host "MINIMIZING ALL WINDOWS"
+          Write-Host "=========================================="
+
+          Add-Type -AssemblyName Microsoft.VisualBasic
+
+          try {
+
+              $shell =
+                New-Object -ComObject Shell.Application
+
+              $shell.MinimizeAll()
+
+              Write-Host "All existing windows minimized."
+
+          }
+          catch {
+
+              Write-Host "Shell MinimizeAll failed."
+              Write-Host $_.Exception.Message
+
+              # Fallback: Win+D
+              Add-Type @"
+          using System;
+          using System.Runtime.InteropServices;
+
+          public static class DesktopKeys
+          {
+              [DllImport("user32.dll")]
+              public static extern void keybd_event(
+                  byte bVk,
+                  byte bScan,
+                  uint dwFlags,
+                  UIntPtr dwExtraInfo
+              );
+
+              public const uint KEYEVENTF_KEYUP = 0x0002;
+              public const byte VK_LWIN = 0x5B;
+              public const byte VK_D = 0x44;
+          }
+          "@
+
+              [DesktopKeys]::keybd_event(
+                  [DesktopKeys]::VK_LWIN,
+                  0,
+                  0,
+                  [UIntPtr]::Zero
+              )
+
+              [DesktopKeys]::keybd_event(
+                  [DesktopKeys]::VK_D,
+                  0,
+                  0,
+                  [UIntPtr]::Zero
+              )
+
+              [DesktopKeys]::keybd_event(
+                  [DesktopKeys]::VK_D,
+                  0,
+                  [DesktopKeys]::KEYEVENTF_KEYUP,
+                  [UIntPtr]::Zero
+              )
+
+              [DesktopKeys]::keybd_event(
+                  [DesktopKeys]::VK_LWIN,
+                  0,
+                  [DesktopKeys]::KEYEVENTF_KEYUP,
+                  [UIntPtr]::Zero
+              )
+
+              Write-Host "Win+D fallback executed."
+          }
+
+          Start-Sleep -Seconds 2
+
+          Write-Host "Desktop prepared."
+
+      # ============================================================
+      # START CHROME MAXIMIZED
+      # ============================================================
+
+      - name: Start Chrome maximized
         shell: powershell
         run: |
 
           $ErrorActionPreference = "Stop"
 
           Write-Host "=========================================="
-          Write-Host "STARTING CHROME"
+          Write-Host "STARTING CHROME MAXIMIZED"
           Write-Host "=========================================="
 
           $chromePath =
@@ -643,7 +699,7 @@ jobs:
           }
 
           if (-not (Test-Path $chromePath)) {
-              throw "Chrome does not exist: $chromePath"
+              throw "Chrome executable does not exist."
           }
 
           $chromeProfile =
@@ -659,11 +715,12 @@ jobs:
             "--user-data-dir=$chromeProfile"
 
             # ======================================================
-            # URL را اینجا تغییر بده
+            # URL
             # ======================================================
             "https://github.com"
           )
 
+          Write-Host ""
           Write-Host "Opening URL:"
           Write-Host "https://github.com"
 
@@ -677,19 +734,77 @@ jobs:
               throw "Chrome failed to start."
           }
 
-          Write-Host "Chrome PID: $($chromeProcess.Id)"
+          Write-Host "Chrome PID:"
+          Write-Host $chromeProcess.Id
 
-          Start-Sleep -Seconds 10
+          Start-Sleep -Seconds 8
 
-          $chromeProcesses =
+          # ==========================================================
+          # FORCE CHROME TO FRONT + MAXIMIZED
+          # ==========================================================
+
+          Add-Type @"
+          using System;
+          using System.Runtime.InteropServices;
+
+          public static class ChromeWindow
+          {
+              [DllImport("user32.dll")]
+              public static extern bool ShowWindow(
+                  IntPtr hWnd,
+                  int nCmdShow
+              );
+
+              [DllImport("user32.dll")]
+              public static extern bool SetForegroundWindow(
+                  IntPtr hWnd
+              );
+
+              public const int SW_MAXIMIZE = 3;
+          }
+          "@
+
+          $chromeWindow =
             Get-Process chrome `
-              -ErrorAction SilentlyContinue
+              -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.MainWindowHandle -ne 0
+            } |
+            Sort-Object StartTime -Descending |
+            Select-Object -First 1
 
-          if (-not $chromeProcesses) {
-              throw "Chrome process was not found."
+          if ($null -eq $chromeWindow) {
+              throw "Chrome window was not found."
           }
 
-          $chromeProcesses |
+          Write-Host ""
+          Write-Host "Chrome PID:"
+          Write-Host $chromeWindow.Id
+
+          Write-Host "Chrome HWND:"
+          Write-Host $chromeWindow.MainWindowHandle
+
+          [ChromeWindow]::ShowWindow(
+              $chromeWindow.MainWindowHandle,
+              [ChromeWindow]::SW_MAXIMIZE
+          ) | Out-Null
+
+          Start-Sleep -Milliseconds 800
+
+          [ChromeWindow]::SetForegroundWindow(
+              $chromeWindow.MainWindowHandle
+          ) | Out-Null
+
+          Start-Sleep -Seconds 2
+
+          Write-Host ""
+          Write-Host "Chrome is maximized and foreground."
+
+          Write-Host ""
+          Write-Host "Chrome windows:"
+
+          Get-Process chrome `
+            -ErrorAction SilentlyContinue |
             Select-Object `
               Id,
               MainWindowHandle,
@@ -773,7 +888,6 @@ jobs:
                   "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff')  $text"
 
               Write-Host $line
-
               Add-Content `
                 -Path $logFile `
                 -Value $line
@@ -820,6 +934,7 @@ jobs:
               public const uint MOUSEEVENTF_LEFTUP   = 0x0004;
 
               public const int SW_RESTORE = 9;
+              public const int SW_MAXIMIZE = 3;
           }
 
           "@
@@ -852,7 +967,7 @@ jobs:
               [System.Windows.Forms.Screen]::PrimaryScreen
 
           if ($null -eq $screen) {
-              throw "PrimaryScreen is null."
+              throw "Primary screen is null."
           }
 
           $screenX =
@@ -889,7 +1004,7 @@ jobs:
           }
 
           # ==========================================================
-          # FIND CHROME
+          # FIND CHROME WINDOW
           # ==========================================================
 
           Log "Finding Chrome window..."
@@ -904,7 +1019,7 @@ jobs:
                   Where-Object {
                       $_.MainWindowHandle -ne 0
                   } |
-                  Sort-Object MainWindowHandle -Descending |
+                  Sort-Object StartTime -Descending |
                   Select-Object -First 1
 
               if ($null -ne $chromeWindow) {
@@ -914,30 +1029,38 @@ jobs:
               Start-Sleep -Milliseconds 500
           }
 
-          if ($null -ne $chromeWindow) {
-
-              Log "Chrome PID = $($chromeWindow.Id)"
-              Log "Chrome HWND = $($chromeWindow.MainWindowHandle)"
-
-              [NativeMouse]::ShowWindow(
-                  $chromeWindow.MainWindowHandle,
-                  [NativeMouse]::SW_RESTORE
-              ) | Out-Null
-
-              Start-Sleep -Milliseconds 500
-
-              [NativeMouse]::SetForegroundWindow(
-                  $chromeWindow.MainWindowHandle
-              ) | Out-Null
-
-              Start-Sleep -Milliseconds 1000
-
-              Log "Chrome activated."
+          if ($null -eq $chromeWindow) {
+              throw "Chrome window was not found."
           }
-          else {
 
-              Log "WARNING: Chrome window not found."
-          }
+          Log "Chrome PID = $($chromeWindow.Id)"
+          Log "Chrome HWND = $($chromeWindow.MainWindowHandle)"
+
+          # ==========================================================
+          # FORCE MAXIMIZED + FOREGROUND AGAIN
+          # ==========================================================
+
+          [NativeMouse]::ShowWindow(
+              $chromeWindow.MainWindowHandle,
+              [NativeMouse]::SW_RESTORE
+          ) | Out-Null
+
+          Start-Sleep -Milliseconds 300
+
+          [NativeMouse]::ShowWindow(
+              $chromeWindow.MainWindowHandle,
+              [NativeMouse]::SW_MAXIMIZE
+          ) | Out-Null
+
+          Start-Sleep -Milliseconds 500
+
+          [NativeMouse]::SetForegroundWindow(
+              $chromeWindow.MainWindowHandle
+          ) | Out-Null
+
+          Start-Sleep -Seconds 1
+
+          Log "Chrome maximized and activated."
 
           # ==========================================================
           # START FFMPEG
@@ -997,7 +1120,7 @@ jobs:
           Log "FFmpeg PID = $($ffmpegProcess.Id)"
 
           # ==========================================================
-          # WAIT BEFORE CLICK
+          # WAIT
           # ==========================================================
 
           Log "Waiting 5 seconds..."
@@ -1005,7 +1128,7 @@ jobs:
           Start-Sleep -Seconds 5
 
           # ==========================================================
-          # MOVE TO EXACT COORDINATES
+          # MOVE TO CLICK POSITION
           # ==========================================================
 
           Log "Moving mouse to X=$x Y=$y"
@@ -1023,7 +1146,7 @@ jobs:
           Start-Sleep -Milliseconds 800
 
           # ==========================================================
-          # VERIFY ACTUAL CURSOR POSITION
+          # VERIFY CURSOR
           # ==========================================================
 
           $cursor =
@@ -1115,7 +1238,6 @@ jobs:
           Log "SENDING REAL LEFT CLICK"
           Log "=========================================="
 
-          # Move again
           [NativeMouse]::SetCursorPos(
               $x,
               $y
@@ -1164,7 +1286,7 @@ jobs:
           Log "FFmpeg exit code = $($ffmpegProcess.ExitCode)"
 
           # ==========================================================
-          # VALIDATE OUTPUT
+          # VALIDATE FILES
           # ==========================================================
 
           if (-not (Test-Path $videoFile)) {
@@ -1185,11 +1307,11 @@ jobs:
           Log "Screenshot size = $screenshotSize bytes"
 
           if ($videoSize -le 1000) {
-              throw "Video file is too small."
+              throw "Video is too small."
           }
 
           if ($screenshotSize -le 1000) {
-              throw "Screenshot file is too small."
+              throw "Screenshot is too small."
           }
 
           # ==========================================================
