@@ -10,8 +10,8 @@ jobs:
 
     env:
       RDP_USERNAME: runneradmin
+      RDP_PASSWORD: "YOUR_PASSWORD_HERE"
 
-      # مختصات فعلی شما
       CLICK_X: "84"
       CLICK_Y: "614"
 
@@ -51,13 +51,31 @@ jobs:
           $PSVersionTable
 
       # ============================================================
-      # RDP
+      # SHOW RDP LOGIN
+      # ============================================================
+
+      - name: Show RDP login
+        shell: powershell
+        run: |
+          Write-Host "=========================================="
+          Write-Host "RDP LOGIN"
+          Write-Host "=========================================="
+
+          Write-Host "Username:"
+          Write-Host $env:RDP_USERNAME
+
+          Write-Host ""
+          Write-Host "Password:"
+          Write-Host $env:RDP_PASSWORD
+
+          Write-Host "=========================================="
+
+      # ============================================================
+      # CONFIGURE RDP
       # ============================================================
 
       - name: Configure RDP
         shell: powershell
-        env:
-          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: |
 
           $ErrorActionPreference = "Stop"
@@ -74,10 +92,11 @@ jobs:
           }
 
           if ([string]::IsNullOrWhiteSpace($password)) {
-              throw "RDP_PASSWORD Secret is empty. Create a repository secret named RDP_PASSWORD."
+              throw "RDP_PASSWORD is empty."
           }
 
           Write-Host "Username: $username"
+          Write-Host "Password: $password"
 
           $securePassword = ConvertTo-SecureString `
             $password `
@@ -85,7 +104,7 @@ jobs:
             -Force
 
           # ==========================================================
-          # CREATE OR UPDATE USER
+          # CREATE / UPDATE USER
           # ==========================================================
 
           $existingUser = Get-LocalUser `
@@ -99,11 +118,18 @@ jobs:
 
               Set-LocalUser `
                 -Name $username `
-                -Password $securePassword
+                -Password $securePassword `
+                -ErrorAction Stop
 
-              Set-LocalUser `
-                -Name $username `
-                -PasswordNeverExpires $true
+              try {
+                  Set-LocalUser `
+                    -Name $username `
+                    -PasswordNeverExpires $true
+              }
+              catch {
+                  Write-Host "Could not change PasswordNeverExpires:"
+                  Write-Host $_.Exception.Message
+              }
 
           }
           else {
@@ -115,7 +141,8 @@ jobs:
                 -Password $securePassword `
                 -PasswordNeverExpires `
                 -UserMayNotChangePassword `
-                -Description "Temporary GitHub Actions RDP account"
+                -Description "Temporary GitHub Actions RDP account" `
+                -ErrorAction Stop
 
               Write-Host "User created."
           }
@@ -124,14 +151,15 @@ jobs:
           # ADMINISTRATORS
           # ==========================================================
 
-          $adminMember = Get-LocalGroupMember `
-            -Group "Administrators" `
-            -ErrorAction SilentlyContinue |
+          $adminCheck =
+            Get-LocalGroupMember `
+              -Group "Administrators" `
+              -ErrorAction SilentlyContinue |
             Where-Object {
-              $_.Name -eq "$env:COMPUTERNAME\$username"
+              $_.Name -match "\\$([regex]::Escape($username))$"
             }
 
-          if ($null -eq $adminMember) {
+          if ($null -eq $adminCheck) {
 
               Add-LocalGroupMember `
                 -Group "Administrators" `
@@ -139,8 +167,10 @@ jobs:
                 -ErrorAction Stop
 
               Write-Host "Added to Administrators."
+
           }
           else {
+
               Write-Host "Already in Administrators."
           }
 
@@ -148,14 +178,15 @@ jobs:
           # REMOTE DESKTOP USERS
           # ==========================================================
 
-          $rdpMember = Get-LocalGroupMember `
-            -Group "Remote Desktop Users" `
-            -ErrorAction SilentlyContinue |
+          $rdpCheck =
+            Get-LocalGroupMember `
+              -Group "Remote Desktop Users" `
+              -ErrorAction SilentlyContinue |
             Where-Object {
-              $_.Name -eq "$env:COMPUTERNAME\$username"
+              $_.Name -match "\\$([regex]::Escape($username))$"
             }
 
-          if ($null -eq $rdpMember) {
+          if ($null -eq $rdpCheck) {
 
               Add-LocalGroupMember `
                 -Group "Remote Desktop Users" `
@@ -163,8 +194,10 @@ jobs:
                 -ErrorAction Stop
 
               Write-Host "Added to Remote Desktop Users."
+
           }
           else {
+
               Write-Host "Already in Remote Desktop Users."
           }
 
@@ -180,7 +213,7 @@ jobs:
             -Value 0 `
             -Force
 
-          # Network Level Authentication
+          # NLA enabled
           Set-ItemProperty `
             -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
             -Name "UserAuthentication" `
@@ -191,7 +224,7 @@ jobs:
           # FIREWALL
           # ==========================================================
 
-          Write-Host "Enabling Remote Desktop firewall..."
+          Write-Host "Enabling Remote Desktop firewall rules..."
 
           Get-NetFirewallRule `
             -DisplayGroup "Remote Desktop" `
@@ -200,14 +233,15 @@ jobs:
             -ErrorAction SilentlyContinue
 
           # ==========================================================
-          # SERVICE
+          # TERM SERVICE
           # ==========================================================
 
           Write-Host "Configuring TermService..."
 
           Set-Service `
             -Name "TermService" `
-            -StartupType Automatic
+            -StartupType Automatic `
+            -ErrorAction Stop
 
           $termService =
             Get-Service -Name "TermService"
@@ -216,12 +250,15 @@ jobs:
 
               Restart-Service `
                 -Name "TermService" `
-                -Force
+                -Force `
+                -ErrorAction Stop
+
           }
           else {
 
               Start-Service `
-                -Name "TermService"
+                -Name "TermService" `
+                -ErrorAction Stop
           }
 
           Start-Sleep -Seconds 4
@@ -261,7 +298,7 @@ jobs:
           Write-Host "=========================================="
 
           if ([string]::IsNullOrWhiteSpace($env:TAILSCALE_AUTH_KEY)) {
-              throw "TAILSCALE_AUTH_KEY Secret is empty."
+              throw "TAILSCALE_AUTH_KEY is empty."
           }
 
           $tailscaleExe =
@@ -289,7 +326,7 @@ jobs:
           }
 
           if (-not (Test-Path $tailscaleExe)) {
-              throw "Tailscale executable was not found."
+              throw "Tailscale executable not found."
           }
 
           Write-Host "Connecting Tailscale..."
@@ -311,7 +348,7 @@ jobs:
           & $tailscaleExe status
 
           Write-Host ""
-          Write-Host "=== TAILSCALE IPV4 ==="
+          Write-Host "=== TAILSCALE IPv4 ==="
 
           $tailscaleIP =
             (& $tailscaleExe ip -4 | Out-String).Trim()
@@ -387,14 +424,12 @@ jobs:
               -Encoding utf8
 
       # ============================================================
-      # CHROME POLICIES
+      # CHROME POLICY
       # ============================================================
 
       - name: Configure Chrome policies
         shell: powershell
         run: |
-
-          $ErrorActionPreference = "Stop"
 
           $policyPath =
             "HKLM:\Software\Policies\Google\Chrome"
@@ -465,7 +500,7 @@ jobs:
           Write-Host "Chrome profile ready."
 
       # ============================================================
-      # RDP INFORMATION
+      # RDP INFO
       # ============================================================
 
       - name: Show RDP connection information
@@ -473,7 +508,7 @@ jobs:
         run: |
 
           Write-Host "=========================================="
-          Write-Host "RDP CONNECTION"
+          Write-Host "RDP CONNECTION INFORMATION"
           Write-Host "=========================================="
 
           Write-Host "Tailscale IP:"
@@ -482,6 +517,10 @@ jobs:
           Write-Host ""
           Write-Host "Username:"
           Write-Host $env:RDP_USERNAME
+
+          Write-Host ""
+          Write-Host "Password:"
+          Write-Host $env:RDP_PASSWORD
 
           Write-Host ""
           Write-Host "Port:"
@@ -526,7 +565,6 @@ jobs:
               qwinsta
           }
           catch {
-              Write-Host "qwinsta failed:"
               Write-Host $_.Exception.Message
           }
 
@@ -536,7 +574,7 @@ jobs:
             [System.Windows.Forms.Screen]::PrimaryScreen
 
           if ($null -eq $screen) {
-              throw "Primary screen is null."
+              throw "PrimaryScreen is null."
           }
 
           Write-Host ""
@@ -568,7 +606,7 @@ jobs:
           }
 
           if (-not (Test-Path $chromePath)) {
-              throw "Chrome does not exist: $chromePath"
+              throw "Chrome does not exist."
           }
 
           $chromeProfile =
@@ -584,7 +622,7 @@ jobs:
             "--user-data-dir=$chromeProfile"
 
             # ======================================================
-            # آدرس سایت
+            # آدرس سایت را اینجا تغییر بده
             # ======================================================
             "https://github.com"
           )
@@ -592,17 +630,18 @@ jobs:
           Write-Host "Opening:"
           Write-Host "https://github.com"
 
-          $process =
+          $chromeProcess =
             Start-Process `
               -FilePath $chromePath `
               -ArgumentList $arguments `
               -PassThru
 
-          if ($null -eq $process) {
-              throw "Failed to start Chrome."
+          if ($null -eq $chromeProcess) {
+              throw "Chrome failed to start."
           }
 
-          Write-Host "Chrome PID: $($process.Id)"
+          Write-Host "Chrome PID:"
+          Write-Host $chromeProcess.Id
 
           Start-Sleep -Seconds 10
 
@@ -775,10 +814,6 @@ jobs:
           $screen =
               [System.Windows.Forms.Screen]::PrimaryScreen
 
-          if ($null -eq $screen) {
-              throw "Primary screen is null."
-          }
-
           $screenX =
               $screen.Bounds.X
 
@@ -797,26 +832,10 @@ jobs:
           Log "Screen Height = $height"
 
           # ==========================================================
-          # VALIDATE COORDINATES
+          # FIND CHROME WINDOW
           # ==========================================================
 
-          if ($x -lt $screenX -or
-              $x -ge ($screenX + $width)) {
-
-              throw "CLICK_X is outside the screen."
-          }
-
-          if ($y -lt $screenY -or
-              $y -ge ($screenY + $height)) {
-
-              throw "CLICK_Y is outside the screen."
-          }
-
-          # ==========================================================
-          # FIND CHROME
-          # ==========================================================
-
-          Log "Searching for Chrome window..."
+          Log "Finding Chrome window..."
 
           $chromeWindow = $null
 
@@ -861,7 +880,7 @@ jobs:
           }
           else {
 
-              Log "WARNING: Chrome window handle not found."
+              Log "WARNING: Chrome window was not found."
           }
 
           # ==========================================================
@@ -922,7 +941,7 @@ jobs:
           Log "FFmpeg PID = $($ffmpegProcess.Id)"
 
           # ==========================================================
-          # WAIT BEFORE CLICK
+          # WAIT
           # ==========================================================
 
           Log "Waiting 5 seconds..."
@@ -930,10 +949,10 @@ jobs:
           Start-Sleep -Seconds 5
 
           # ==========================================================
-          # MOVE CURSOR
+          # MOVE TO TARGET
           # ==========================================================
 
-          Log "Moving cursor to X=$x Y=$y"
+          Log "Moving mouse to X=$x Y=$y"
 
           $moveResult =
               [NativeMouse]::SetCursorPos(
@@ -954,7 +973,7 @@ jobs:
           $cursor =
               [System.Windows.Forms.Cursor]::Position
 
-          Log "Actual cursor:"
+          Log "Actual cursor position:"
           Log "X=$($cursor.X)"
           Log "Y=$($cursor.Y)"
 
@@ -1037,10 +1056,9 @@ jobs:
           # ==========================================================
 
           Log "=========================================="
-          Log "SENDING REAL LEFT CLICK"
+          Log "REAL LEFT CLICK"
           Log "=========================================="
 
-          # Move again
           [NativeMouse]::SetCursorPos(
               $x,
               $y
@@ -1048,7 +1066,7 @@ jobs:
 
           Start-Sleep -Milliseconds 300
 
-          # LEFT DOWN
+          # LEFT BUTTON DOWN
           [NativeMouse]::mouse_event(
               [NativeMouse]::MOUSEEVENTF_LEFTDOWN,
               0,
@@ -1059,7 +1077,7 @@ jobs:
 
           Start-Sleep -Milliseconds 150
 
-          # LEFT UP
+          # LEFT BUTTON UP
           [NativeMouse]::mouse_event(
               [NativeMouse]::MOUSEEVENTF_LEFTUP,
               0,
@@ -1071,7 +1089,7 @@ jobs:
           Log "LEFT CLICK SENT."
 
           # ==========================================================
-          # KEEP RECORDING
+          # CONTINUE RECORDING
           # ==========================================================
 
           Start-Sleep -Seconds 7
@@ -1089,11 +1107,11 @@ jobs:
           Log "FFmpeg exit code = $($ffmpegProcess.ExitCode)"
 
           # ==========================================================
-          # VALIDATE OUTPUTS
+          # CHECK OUTPUTS
           # ==========================================================
 
           if (-not (Test-Path $videoFile)) {
-              throw "Video file was not created."
+              throw "Video was not created."
           }
 
           if (-not (Test-Path $screenshotFile)) {
@@ -1110,11 +1128,11 @@ jobs:
           Log "Screenshot size = $screenshotSize bytes"
 
           if ($videoSize -le 1000) {
-              throw "Video file is too small."
+              throw "Video is too small."
           }
 
           if ($screenshotSize -le 1000) {
-              throw "Screenshot file is too small."
+              throw "Screenshot is too small."
           }
 
           # ==========================================================
@@ -1127,8 +1145,6 @@ jobs:
 
           if ($null -ne $ffprobe) {
 
-              Log "Running FFprobe..."
-
               $probe =
                   & ffprobe `
                     -v error `
@@ -1136,11 +1152,11 @@ jobs:
                     -of default=noprint_wrappers=1:nokey=1 `
                     $videoFile 2>&1
 
-              Log "Duration = $probe"
+              Log "Video duration = $probe"
           }
 
           Log "=========================================="
-          Log "RECORDING COMPLETED"
+          Log "RECORDING COMPLETED SUCCESSFULLY"
           Log "=========================================="
 
           '@ |
@@ -1170,17 +1186,10 @@ jobs:
           Write-Host "CLICK_X = $env:CLICK_X"
           Write-Host "CLICK_Y = $env:CLICK_Y"
 
-          $scriptPath =
-            "C:\temp\RDPClickAndRecord.ps1"
-
-          if (-not (Test-Path $scriptPath)) {
-              throw "Recording script does not exist."
-          }
-
           powershell.exe `
             -NoProfile `
             -ExecutionPolicy Bypass `
-            -File $scriptPath
+            -File "C:\temp\RDPClickAndRecord.ps1"
 
           $exitCode =
             $LASTEXITCODE
@@ -1232,7 +1241,6 @@ jobs:
                   Write-Host ""
                   Write-Host "NOT FOUND:"
                   Write-Host $path
-
               }
           }
 
@@ -1255,7 +1263,7 @@ jobs:
           }
 
       # ============================================================
-      # UPLOAD
+      # UPLOAD ARTIFACTS
       # ============================================================
 
       - name: Upload recording outputs
