@@ -10,7 +10,9 @@ jobs:
 
     env:
       RDP_USERNAME: runneradmin
-      RDP_PASSWORD: WindowsRDP#2025
+      RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+
+      # مختصات دقیق شما
       CLICK_X: "84"
       CLICK_Y: "614"
 
@@ -24,13 +26,15 @@ jobs:
         uses: actions/checkout@v7
 
       # ============================================================
-      # BASIC ENVIRONMENT INFO
+      # BASIC INFORMATION
       # ============================================================
 
       - name: Show runner information
         shell: powershell
         run: |
-          Write-Host "=== RUNNER INFORMATION ==="
+          Write-Host "=========================================="
+          Write-Host "RUNNER INFORMATION"
+          Write-Host "=========================================="
 
           Write-Host "User:"
           whoami
@@ -40,7 +44,7 @@ jobs:
           hostname
 
           Write-Host ""
-          Write-Host "GitHub Workspace:"
+          Write-Host "Workspace:"
           Write-Host $env:GITHUB_WORKSPACE
 
           Write-Host ""
@@ -54,29 +58,29 @@ jobs:
       - name: Configure RDP
         shell: powershell
         run: |
-          Write-Host "=== Configuring RDP ==="
+          Write-Host "=========================================="
+          Write-Host "CONFIGURING RDP"
+          Write-Host "=========================================="
+
+          if ([string]::IsNullOrWhiteSpace($env:RDP_PASSWORD)) {
+              throw "RDP_PASSWORD secret is empty."
+          }
 
           $username = $env:RDP_USERNAME
           $password = $env:RDP_PASSWORD
 
-          $securePassword =
-            ConvertTo-SecureString `
+          $securePassword = ConvertTo-SecureString `
               $password `
               -AsPlainText `
               -Force
 
-          # --------------------------------------------------------
-          # Create or update user
-          # --------------------------------------------------------
-
-          $existingUser =
-            Get-LocalUser `
+          $existingUser = Get-LocalUser `
               -Name $username `
               -ErrorAction SilentlyContinue
 
           if ($existingUser) {
 
-              Write-Host "User exists. Updating password..."
+              Write-Host "Updating existing user..."
 
               Set-LocalUser `
                 -Name $username `
@@ -94,12 +98,7 @@ jobs:
                 -PasswordNeverExpires `
                 -UserMayNotChangePassword `
                 -Description "Temporary GitHub Actions RDP account"
-
           }
-
-          # --------------------------------------------------------
-          # Groups
-          # --------------------------------------------------------
 
           Add-LocalGroupMember `
             -Group "Administrators" `
@@ -111,10 +110,6 @@ jobs:
             -Member $username `
             -ErrorAction SilentlyContinue
 
-          # --------------------------------------------------------
-          # Enable RDP
-          # --------------------------------------------------------
-
           Set-ItemProperty `
             -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
             -Name "fDenyTSConnections" `
@@ -125,17 +120,9 @@ jobs:
             -Name "UserAuthentication" `
             -Value 0
 
-          # --------------------------------------------------------
-          # Firewall
-          # --------------------------------------------------------
-
           Enable-NetFirewallRule `
             -DisplayGroup "Remote Desktop" `
             -ErrorAction SilentlyContinue
-
-          # --------------------------------------------------------
-          # Service
-          # --------------------------------------------------------
 
           Set-Service `
             -Name TermService `
@@ -147,14 +134,11 @@ jobs:
 
           Start-Sleep -Seconds 3
 
-          Write-Host ""
-          Write-Host "=== RDP SERVICE ==="
-
           Get-Service TermService |
             Format-Table Name, Status, StartType -AutoSize
 
           Write-Host ""
-          Write-Host "RDP configured successfully."
+          Write-Host "RDP configured."
 
       # ============================================================
       # TAILSCALE
@@ -165,27 +149,26 @@ jobs:
         env:
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
-          Write-Host "=== Installing Tailscale ==="
+
+          Write-Host "=========================================="
+          Write-Host "INSTALLING TAILSCALE"
+          Write-Host "=========================================="
 
           if ([string]::IsNullOrWhiteSpace($env:TAILSCALE_AUTH_KEY)) {
               throw "TAILSCALE_AUTH_KEY secret is empty."
           }
 
           $tailscaleExe =
-            "C:\Program Files\Tailscale\tailscale.exe"
+              "C:\Program Files\Tailscale\tailscale.exe"
 
           if (-not (Test-Path $tailscaleExe)) {
 
               $installer =
-                "$env:TEMP\tailscale-setup.exe"
-
-              Write-Host "Downloading Tailscale..."
+                  "$env:TEMP\tailscale-setup.exe"
 
               Invoke-WebRequest `
                 -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" `
                 -OutFile $installer
-
-              Write-Host "Installing Tailscale..."
 
               Start-Process `
                 -FilePath $installer `
@@ -199,8 +182,6 @@ jobs:
               throw "Tailscale executable was not found."
           }
 
-          Write-Host "Starting Tailscale..."
-
           & $tailscaleExe up `
             --auth-key="$env:TAILSCALE_AUTH_KEY" `
             --hostname="github-actions-rdp-3" `
@@ -213,19 +194,17 @@ jobs:
           Start-Sleep -Seconds 5
 
           Write-Host ""
-          Write-Host "=== TAILSCALE STATUS ==="
-
+          Write-Host "Tailscale status:"
           & $tailscaleExe status
 
           Write-Host ""
-          Write-Host "=== TAILSCALE IPv4 ==="
+          Write-Host "Tailscale IPv4:"
 
           $tailscaleIP =
-            (& $tailscaleExe ip -4 |
-              Out-String).Trim()
+              (& $tailscaleExe ip -4 | Out-String).Trim()
 
           if ([string]::IsNullOrWhiteSpace($tailscaleIP)) {
-              throw "Could not obtain Tailscale IPv4 address."
+              throw "Could not obtain Tailscale IPv4."
           }
 
           Write-Host $tailscaleIP
@@ -242,7 +221,10 @@ jobs:
       - name: Check and install Chrome
         shell: powershell
         run: |
-          Write-Host "=== Checking Chrome ==="
+
+          Write-Host "=========================================="
+          Write-Host "CHECKING CHROME"
+          Write-Host "=========================================="
 
           $paths = @(
               "C:\Program Files\Google\Chrome\Application\chrome.exe",
@@ -254,17 +236,15 @@ jobs:
           foreach ($path in $paths) {
 
               if (Test-Path $path) {
-
                   $chromePath = $path
                   break
-
               }
           }
 
           if (-not $chromePath) {
 
               Write-Host "Chrome not found."
-              Write-Host "Installing with Chocolatey..."
+              Write-Host "Installing..."
 
               choco install googlechrome -y --no-progress
 
@@ -273,10 +253,8 @@ jobs:
               foreach ($path in $paths) {
 
                   if (Test-Path $path) {
-
                       $chromePath = $path
                       break
-
                   }
               }
           }
@@ -285,7 +263,7 @@ jobs:
               throw "Chrome executable was not found."
           }
 
-          Write-Host "Chrome found:"
+          Write-Host "Chrome:"
           Write-Host $chromePath
 
           "CHROME_PATH=$chromePath" |
@@ -300,7 +278,6 @@ jobs:
       - name: Configure Chrome policies
         shell: powershell
         run: |
-          Write-Host "=== Configuring Chrome policies ==="
 
           $policyPath =
             "HKLM:\Software\Policies\Google\Chrome"
@@ -313,7 +290,6 @@ jobs:
                 Out-Null
           }
 
-          # Disable browser sign-in UI
           New-ItemProperty `
             -Path $policyPath `
             -Name "BrowserSignin" `
@@ -322,7 +298,6 @@ jobs:
             -Force |
             Out-Null
 
-          # Disable sync
           New-ItemProperty `
             -Path $policyPath `
             -Name "SyncDisabled" `
@@ -331,22 +306,13 @@ jobs:
             -Force |
             Out-Null
 
-          Write-Host ""
-          Write-Host "=== Applied Chrome Policies ==="
-
-          Get-ItemProperty `
-            -Path $policyPath |
-            Select-Object BrowserSignin, SyncDisabled |
-            Format-List
-
       # ============================================================
-      # CHROME PROFILE
+      # PREPARE CHROME PROFILE
       # ============================================================
 
       - name: Prepare Chrome profile
         shell: powershell
         run: |
-          Write-Host "=== Preparing Chrome profile ==="
 
           $chromeProfile =
             "C:\temp\ChromeProfile"
@@ -369,7 +335,6 @@ jobs:
             -Force |
             Out-Null
 
-          # Stop any old Chrome processes
           Get-Process chrome `
             -ErrorAction SilentlyContinue |
             Stop-Process `
@@ -378,8 +343,6 @@ jobs:
 
           Start-Sleep -Seconds 2
 
-          Write-Host "Chrome profile ready."
-
       # ============================================================
       # RDP INFO
       # ============================================================
@@ -387,6 +350,7 @@ jobs:
       - name: Show RDP connection information
         shell: powershell
         run: |
+
           Write-Host "=========================================="
           Write-Host "RDP INFORMATION"
           Write-Host "=========================================="
@@ -395,61 +359,47 @@ jobs:
           Write-Host $env:TAILSCALE_IP
 
           Write-Host ""
-          Write-Host "RDP Username:"
+          Write-Host "Username:"
           Write-Host $env:RDP_USERNAME
 
           Write-Host ""
-          Write-Host "RDP Port:"
+          Write-Host "Port:"
           Write-Host "3389"
 
           Write-Host ""
-          Write-Host "Connect externally using:"
+          Write-Host "Connect to:"
           Write-Host "$env:TAILSCALE_IP`:3389"
 
           Write-Host "=========================================="
 
       # ============================================================
-      # DO NOT CREATE A LOCAL MSTSC SESSION
+      # VERIFY DESKTOP
       # ============================================================
-      #
-      # IMPORTANT:
-      # We intentionally do NOT run mstsc.exe here.
-      #
-      # The GitHub runner already has an interactive Windows desktop.
-      # Opening a second RDP session from inside the runner can switch
-      # sessions/desktops and cause gdigrab/screenshot problems.
-      #
-      # External RDP users can connect through Tailscale while the
-      # workflow remains active.
 
       - name: Verify interactive desktop
         shell: powershell
         run: |
-          Write-Host "=== Verifying Windows desktop ==="
+
+          Write-Host "=========================================="
+          Write-Host "VERIFYING DESKTOP"
+          Write-Host "=========================================="
 
           Write-Host "USERNAME:"
-          $env:USERNAME
+          Write-Host $env:USERNAME
 
           Write-Host ""
           Write-Host "SESSIONNAME:"
-          $env:SESSIONNAME
+          Write-Host $env:SESSIONNAME
 
           Write-Host ""
-          Write-Host "SESSION ID:"
+          Write-Host "QWINSTA:"
 
           try {
-              $sessionOutput =
-                (qwinsta |
-                  Out-String)
-
-              Write-Host $sessionOutput
+              qwinsta
           }
           catch {
-              Write-Host "qwinsta failed: $($_.Exception.Message)"
+              Write-Host "qwinsta failed."
           }
-
-          Write-Host ""
-          Write-Host "Primary screen:"
 
           Add-Type -AssemblyName System.Windows.Forms
 
@@ -457,31 +407,32 @@ jobs:
             [System.Windows.Forms.Screen]::PrimaryScreen
 
           if ($null -eq $screen) {
-              throw "Primary screen is null."
+              throw "PrimaryScreen is null."
           }
 
-          Write-Host "X=$($screen.Bounds.X)"
-          Write-Host "Y=$($screen.Bounds.Y)"
-          Write-Host "Width=$($screen.Bounds.Width)"
-          Write-Host "Height=$($screen.Bounds.Height)"
+          Write-Host ""
+          Write-Host "SCREEN:"
+          Write-Host "X = $($screen.Bounds.X)"
+          Write-Host "Y = $($screen.Bounds.Y)"
+          Write-Host "Width = $($screen.Bounds.Width)"
+          Write-Host "Height = $($screen.Bounds.Height)"
 
       # ============================================================
-      # START CHROME DIRECTLY
+      # START CHROME
       # ============================================================
 
       - name: Start Chrome
         shell: powershell
         run: |
-          Write-Host "=== Starting Chrome directly ==="
+
+          Write-Host "=========================================="
+          Write-Host "STARTING CHROME"
+          Write-Host "=========================================="
 
           $chromePath = $env:CHROME_PATH
 
           if (-not $chromePath) {
               throw "CHROME_PATH is empty."
-          }
-
-          if (-not (Test-Path $chromePath)) {
-              throw "Chrome executable does not exist: $chromePath"
           }
 
           $chromeProfile =
@@ -491,48 +442,39 @@ jobs:
             "--no-first-run"
             "--no-default-browser-check"
             "--disable-session-crashed-bubble"
+            "--disable-features=Translate"
             "--start-maximized"
             "--new-window"
             "--user-data-dir=$chromeProfile"
-            "https://agentchain.noesisai.it/faucet?utm_source=chatgpt.com"
+
+            # ======================================================
+            # آدرس سایت را فقط در همین خط عوض کن
+            # ======================================================
+            "https://github.com"
           )
 
-          Write-Host "Chrome arguments:"
-          $arguments | ForEach-Object {
-              Write-Host $_
-          }
+          Write-Host "Opening:"
+          Write-Host "https://github.com"
 
-          $chromeProcess =
-            Start-Process `
-              -FilePath $chromePath `
-              -ArgumentList $arguments `
-              -PassThru
-
-          if ($null -eq $chromeProcess) {
-              throw "Chrome failed to start."
-          }
-
-          Write-Host "Chrome PID: $($chromeProcess.Id)"
+          Start-Process `
+            -FilePath $chromePath `
+            -ArgumentList $arguments
 
           Start-Sleep -Seconds 10
-
-          Write-Host ""
-          Write-Host "=== Chrome Processes ==="
 
           $chromeProcesses =
             Get-Process chrome `
               -ErrorAction SilentlyContinue
 
           if (-not $chromeProcesses) {
-              throw "Chrome process was not found after startup."
+              throw "Chrome process was not found."
           }
 
+          Write-Host ""
+          Write-Host "Chrome processes:"
+
           $chromeProcesses |
-            Select-Object `
-              Id,
-              MainWindowHandle,
-              MainWindowTitle,
-              Responding |
+            Select-Object Id, MainWindowHandle, MainWindowTitle, Responding |
             Format-Table -AutoSize
 
       # ============================================================
@@ -542,16 +484,16 @@ jobs:
       - name: Install FFmpeg
         shell: powershell
         run: |
-          Write-Host "=== Checking FFmpeg ==="
+
+          Write-Host "=========================================="
+          Write-Host "CHECKING FFMPEG"
+          Write-Host "=========================================="
 
           $ffmpeg =
             Get-Command ffmpeg.exe `
               -ErrorAction SilentlyContinue
 
           if (-not $ffmpeg) {
-
-              Write-Host "FFmpeg not found."
-              Write-Host "Installing..."
 
               choco install ffmpeg -y --no-progress
 
@@ -563,34 +505,19 @@ jobs:
               -ErrorAction SilentlyContinue
 
           if (-not $ffmpeg) {
-              throw "FFmpeg was not found after installation."
+              throw "FFmpeg not found."
           }
 
-          Write-Host ""
           Write-Host "FFmpeg:"
           Write-Host $ffmpeg.Source
 
-          ffmpeg -version |
-            Select-Object -First 3
-
-          $ffprobe =
-            Get-Command ffprobe.exe `
-              -ErrorAction SilentlyContinue
-
-          if ($ffprobe) {
-              Write-Host ""
-              Write-Host "FFprobe:"
-              Write-Host $ffprobe.Source
-          }
-
       # ============================================================
-      # PREPARE RECORDER
+      # CREATE ROBUST CLICK/RECORD SCRIPT
       # ============================================================
 
-      - name: Prepare recording files
+      - name: Create recording script
         shell: powershell
         run: |
-          Write-Host "=== Preparing recording ==="
 
           New-Item `
             -ItemType Directory `
@@ -598,43 +525,447 @@ jobs:
             -Force |
             Out-Null
 
-          $requiredScript =
-            "scripts\record.ps1"
+          @'
+          $ErrorActionPreference = "Stop"
 
-          if (-not (Test-Path $requiredScript)) {
-              throw "$requiredScript was not found."
+          $logFile =
+              "C:\temp\click-record.log"
+
+          $videoFile =
+              "C:\temp\rdp-click-video.mp4"
+
+          $screenshotFile =
+              "C:\temp\rdp-click-screenshot.png"
+
+          $ffmpegOutput =
+              "C:\temp\ffmpeg-output.log"
+
+          $ffmpegError =
+              "C:\temp\ffmpeg-error.log"
+
+          function Log($text) {
+
+              $line =
+                  "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff')  $text"
+
+              Write-Host $line
+
+              Add-Content `
+                -Path $logFile `
+                -Value $line
           }
 
-          Copy-Item `
-            $requiredScript `
-            "C:\temp\RDPClickAndRecord.ps1" `
-            -Force
+          # ==========================================================
+          # WIN32 INPUT API
+          # ==========================================================
 
-          # Validate syntax before execution
-          $tokens = $null
-          $errors = $null
+          Add-Type @"
 
-          [System.Management.Automation.Language.Parser]::ParseFile(
-              "C:\temp\RDPClickAndRecord.ps1",
-              [ref]$tokens,
-              [ref]$errors
-          ) | Out-Null
+          using System;
+          using System.Runtime.InteropServices;
 
-          if ($errors.Count -gt 0) {
+          public static class NativeMouse
+          {
+              [DllImport("user32.dll")]
+              public static extern bool SetCursorPos(int X, int Y);
 
-              Write-Host "=== POWERSHELL PARSE ERRORS ==="
+              [DllImport("user32.dll")]
+              public static extern void mouse_event(
+                  uint dwFlags,
+                  uint dx,
+                  uint dy,
+                  uint dwData,
+                  UIntPtr dwExtraInfo
+              );
 
-              foreach ($errorItem in $errors) {
-                  Write-Host $errorItem.ToString()
+              [DllImport("user32.dll")]
+              public static extern bool SetForegroundWindow(IntPtr hWnd);
+
+              [DllImport("user32.dll")]
+              public static extern bool ShowWindow(
+                  IntPtr hWnd,
+                  int nCmdShow
+              );
+
+              public const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
+              public const uint MOUSEEVENTF_LEFTUP   = 0x0004;
+
+              public const int SW_RESTORE = 9;
+          }
+
+          "@
+
+          # ==========================================================
+          # CONFIG
+          # ==========================================================
+
+          $x =
+              [int]$env:CLICK_X
+
+          $y =
+              [int]$env:CLICK_Y
+
+          Log "=========================================="
+          Log "ROBUST CLICK RECORDING"
+          Log "=========================================="
+
+          Log "CLICK_X = $x"
+          Log "CLICK_Y = $y"
+
+          # ==========================================================
+          # SCREEN INFORMATION
+          # ==========================================================
+
+          Add-Type -AssemblyName System.Windows.Forms
+          Add-Type -AssemblyName System.Drawing
+
+          $screen =
+              [System.Windows.Forms.Screen]::PrimaryScreen
+
+          $width =
+              $screen.Bounds.Width
+
+          $height =
+              $screen.Bounds.Height
+
+          Log "Screen Width = $width"
+          Log "Screen Height = $height"
+
+          if ($x -lt $screen.Bounds.Left -or
+              $x -ge ($screen.Bounds.Left + $width)) {
+
+              throw "CLICK_X is outside the screen."
+          }
+
+          if ($y -lt $screen.Bounds.Top -or
+              $y -ge ($screen.Bounds.Top + $height)) {
+
+              throw "CLICK_Y is outside the screen."
+          }
+
+          # ==========================================================
+          # ACTIVATE CHROME WINDOW
+          # ==========================================================
+
+          Log "Finding Chrome window..."
+
+          $chromeWindow = $null
+
+          for ($attempt = 1; $attempt -le 20; $attempt++) {
+
+              $chromeWindow =
+                  Get-Process chrome `
+                    -ErrorAction SilentlyContinue |
+                  Where-Object {
+                      $_.MainWindowHandle -ne 0
+                  } |
+                  Select-Object -First 1
+
+              if ($chromeWindow) {
+                  break
               }
 
-              throw "Recording script contains PowerShell syntax errors."
+              Start-Sleep -Milliseconds 500
           }
 
-          Write-Host "Recording script syntax: OK"
+          if ($chromeWindow) {
+
+              Log "Chrome PID = $($chromeWindow.Id)"
+              Log "Chrome HWND = $($chromeWindow.MainWindowHandle)"
+
+              [NativeMouse]::ShowWindow(
+                  $chromeWindow.MainWindowHandle,
+                  [NativeMouse]::SW_RESTORE
+              ) | Out-Null
+
+              Start-Sleep -Milliseconds 500
+
+              [NativeMouse]::SetForegroundWindow(
+                  $chromeWindow.MainWindowHandle
+              ) | Out-Null
+
+              Start-Sleep -Milliseconds 1000
+
+          }
+          else {
+
+              Log "WARNING: Chrome window handle not found."
+              Log "Continuing with current foreground window."
+          }
+
+          # ==========================================================
+          # START FFMPEG
+          # ==========================================================
+
+          Log "Starting FFmpeg..."
+
+          Remove-Item `
+            $videoFile `
+            -Force `
+            -ErrorAction SilentlyContinue
+
+          Remove-Item `
+            $ffmpegOutput `
+            -Force `
+            -ErrorAction SilentlyContinue
+
+          Remove-Item `
+            $ffmpegError `
+            -Force `
+            -ErrorAction SilentlyContinue
+
+          $ffmpegArgs = @(
+              "-y"
+              "-f"
+              "gdigrab"
+              "-framerate"
+              "30"
+              "-draw_mouse"
+              "1"
+              "-i"
+              "desktop"
+              "-t"
+              "15"
+              "-c:v"
+              "libx264"
+              "-preset"
+              "veryfast"
+              "-pix_fmt"
+              "yuv420p"
+              $videoFile
+          )
+
+          $ffmpegProcess =
+              Start-Process `
+                -FilePath "ffmpeg.exe" `
+                -ArgumentList $ffmpegArgs `
+                -PassThru `
+                -RedirectStandardOutput $ffmpegOutput `
+                -RedirectStandardError $ffmpegError
+
+          Log "FFmpeg PID = $($ffmpegProcess.Id)"
+
+          # ==========================================================
+          # WAIT BEFORE CLICK
+          # ==========================================================
+
+          Log "Waiting 5 seconds before click..."
+
+          Start-Sleep -Seconds 5
+
+          # ==========================================================
+          # MOVE CURSOR
+          # ==========================================================
+
+          Log "Moving cursor to X=$x Y=$y"
+
+          $moveResult =
+              [NativeMouse]::SetCursorPos($x, $y)
+
+          if (-not $moveResult) {
+              throw "SetCursorPos failed."
+          }
+
+          Start-Sleep -Milliseconds 800
+
+          # ==========================================================
+          # VERIFY CURSOR POSITION
+          # ==========================================================
+
+          $cursor =
+              [System.Windows.Forms.Cursor]::Position
+
+          Log "Actual cursor position:"
+          Log "X=$($cursor.X)"
+          Log "Y=$($cursor.Y)"
+
+          # ==========================================================
+          # SCREENSHOT + RED CIRCLE
+          # ==========================================================
+
+          Log "Creating screenshot..."
+
+          $bitmap =
+              New-Object System.Drawing.Bitmap(
+                  $width,
+                  $height,
+                  [System.Drawing.Imaging.PixelFormat]::Format32bppArgb
+              )
+
+          $graphics =
+              [System.Drawing.Graphics]::FromImage($bitmap)
+
+          $graphics.CopyFromScreen(
+              $screen.Bounds.X,
+              $screen.Bounds.Y,
+              0,
+              0,
+              $screen.Bounds.Size
+          )
+
+          # همان مختصات کلیک را روی اسکرین‌شات علامت بزن
+          $radius = 8
+
+          $pen =
+              New-Object System.Drawing.Pen(
+                  [System.Drawing.Color]::Red,
+                  3
+              )
+
+          $brush =
+              New-Object System.Drawing.SolidBrush(
+                  [System.Drawing.Color]::FromArgb(
+                      120,
+                      255,
+                      0,
+                      0
+                  )
+              )
+
+          $graphics.FillEllipse(
+              $brush,
+              ($x - $radius),
+              ($y - $radius),
+              ($radius * 2),
+              ($radius * 2)
+          )
+
+          $graphics.DrawEllipse(
+              $pen,
+              ($x - $radius),
+              ($y - $radius),
+              ($radius * 2),
+              ($radius * 2)
+          )
+
+          $bitmap.Save(
+              $screenshotFile,
+              [System.Drawing.Imaging.ImageFormat]::Png
+          )
+
+          $pen.Dispose()
+          $brush.Dispose()
+          $graphics.Dispose()
+          $bitmap.Dispose()
+
+          Log "Screenshot saved."
+
+          # ==========================================================
+          # REAL LEFT CLICK
+          # ==========================================================
+
+          Log "=========================================="
+          Log "PERFORMING REAL MOUSE CLICK"
+          Log "=========================================="
+
+          # حرکت دوباره برای اطمینان
+          [NativeMouse]::SetCursorPos($x, $y) | Out-Null
+
+          Start-Sleep -Milliseconds 300
+
+          # LEFT DOWN
+          [NativeMouse]::mouse_event(
+              [NativeMouse]::MOUSEEVENTF_LEFTDOWN,
+              0,
+              0,
+              0,
+              [UIntPtr]::Zero
+          )
+
+          Start-Sleep -Milliseconds 120
+
+          # LEFT UP
+          [NativeMouse]::mouse_event(
+              [NativeMouse]::MOUSEEVENTF_LEFTUP,
+              0,
+              0,
+              0,
+              [UIntPtr]::Zero
+          )
+
+          Log "LEFT CLICK SENT."
+
+          # ==========================================================
+          # KEEP RECORDING
+          # ==========================================================
+
+          Start-Sleep -Seconds 7
+
+          # ==========================================================
+          # WAIT FOR FFMPEG
+          # ==========================================================
+
+          Log "Waiting for FFmpeg..."
+
+          if (-not $ffmpegProcess.HasExited) {
+              $ffmpegProcess.WaitForExit()
+          }
+
+          Log "FFmpeg exit code = $($ffmpegProcess.ExitCode)"
+
+          # ==========================================================
+          # VALIDATE OUTPUTS
+          # ==========================================================
+
+          if (-not (Test-Path $videoFile)) {
+              throw "Video file was not created."
+          }
+
+          if (-not (Test-Path $screenshotFile)) {
+              throw "Screenshot file was not created."
+          }
+
+          $videoSize =
+              (Get-Item $videoFile).Length
+
+          $screenshotSize =
+              (Get-Item $screenshotFile).Length
+
+          Log "Video size = $videoSize bytes"
+          Log "Screenshot size = $screenshotSize bytes"
+
+          if ($videoSize -le 1000) {
+              throw "Video file is too small."
+          }
+
+          if ($screenshotSize -le 1000) {
+              throw "Screenshot file is too small."
+          }
+
+          # ==========================================================
+          # FFPROBE
+          # ==========================================================
+
+          $ffprobe =
+              Get-Command ffprobe.exe `
+                -ErrorAction SilentlyContinue
+
+          if ($ffprobe) {
+
+              Log "Running ffprobe..."
+
+              $probe =
+                  & ffprobe `
+                    -v error `
+                    -show_entries format=duration `
+                    -of default=noprint_wrappers=1:nokey=1 `
+                    $videoFile 2>&1
+
+              Log "Video duration = $probe"
+          }
+
+          Log "=========================================="
+          Log "RECORDING COMPLETED SUCCESSFULLY"
+          Log "=========================================="
+          '@ |
+            Set-Content `
+              -Path "C:\temp\RDPClickAndRecord.ps1" `
+              -Encoding UTF8
+
+          Write-Host "Recording script created."
 
       # ============================================================
-      # START RECORDING DIRECTLY
+      # RUN RECORDING
       # ============================================================
 
       - name: Run recording script
@@ -643,41 +974,37 @@ jobs:
           CLICK_X: "84"
           CLICK_Y: "614"
         run: |
-          Write-Host "=========================================="
-          Write-Host "STARTING CLICK RECORDING"
-          Write-Host "=========================================="
 
-          $scriptPath =
-            "C:\temp\RDPClickAndRecord.ps1"
-
-          if (-not (Test-Path $scriptPath)) {
-              throw "Recording script not found."
-          }
+          Write-Host "=========================================="
+          Write-Host "STARTING RECORDING"
+          Write-Host "=========================================="
 
           powershell.exe `
             -NoProfile `
             -ExecutionPolicy Bypass `
-            -File $scriptPath
+            -File "C:\temp\RDPClickAndRecord.ps1"
 
-          $exitCode = $LASTEXITCODE
+          $exitCode =
+              $LASTEXITCODE
 
           Write-Host ""
           Write-Host "Recording script exit code: $exitCode"
 
           if ($exitCode -ne 0) {
-              throw "Recording script failed with exit code $exitCode."
+              throw "Recording failed."
           }
 
       # ============================================================
       # DEBUG
       # ============================================================
 
-      - name: Debug recording outputs
+      - name: Debug outputs
         if: always()
         shell: powershell
         run: |
+
           Write-Host "=========================================="
-          Write-Host "DEBUG OUTPUTS"
+          Write-Host "OUTPUT FILES"
           Write-Host "=========================================="
 
           $files = @(
@@ -694,63 +1021,44 @@ jobs:
               if (Test-Path $path) {
 
                   $item =
-                    Get-Item $path
+                      Get-Item $path
 
                   Write-Host ""
                   Write-Host "FOUND:"
                   Write-Host $path
-                  Write-Host "Size: $($item.Length) bytes"
-
+                  Write-Host "SIZE: $($item.Length) bytes"
               }
               else {
 
                   Write-Host ""
                   Write-Host "NOT FOUND:"
                   Write-Host $path
-
               }
           }
 
           Write-Host ""
           Write-Host "=========================================="
-          Write-Host "TEMP DIRECTORY"
+          Write-Host "CLICK LOG"
           Write-Host "=========================================="
 
-          Get-ChildItem `
-            "C:\temp" `
-            -Force `
-            -ErrorAction SilentlyContinue |
-            Select-Object Name, Length, LastWriteTime |
-            Sort-Object LastWriteTime -Descending |
-            Format-Table -AutoSize
-
           if (Test-Path "C:\temp\click-record.log") {
-
-              Write-Host ""
-              Write-Host "=========================================="
-              Write-Host "click-record.log"
-              Write-Host "=========================================="
-
-              Get-Content `
-                "C:\temp\click-record.log"
+              Get-Content "C:\temp\click-record.log"
           }
+
+          Write-Host ""
+          Write-Host "=========================================="
+          Write-Host "FFMPEG ERROR"
+          Write-Host "=========================================="
 
           if (Test-Path "C:\temp\ffmpeg-error.log") {
-
-              Write-Host ""
-              Write-Host "=========================================="
-              Write-Host "ffmpeg-error.log"
-              Write-Host "=========================================="
-
-              Get-Content `
-                "C:\temp\ffmpeg-error.log"
+              Get-Content "C:\temp\ffmpeg-error.log"
           }
 
       # ============================================================
-      # UPLOAD EVERYTHING
+      # UPLOAD
       # ============================================================
 
-      - name: Upload all RDP recording outputs
+      - name: Upload RDP recording outputs
         if: always()
         uses: actions/upload-artifact@v7
         with:
