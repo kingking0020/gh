@@ -114,8 +114,13 @@ public class RedCircleForm : Form
         {
             CreateParams cp = base.CreateParams;
 
+            // WS_EX_TOOLWINDOW
             cp.ExStyle |= 0x80;
+
+            // WS_EX_NOACTIVATE
             cp.ExStyle |= 0x08000000;
+
+            // WS_EX_LAYERED
             cp.ExStyle |= 0x00080000;
 
             return cp;
@@ -132,8 +137,10 @@ public class RedCircleForm : Form
 
     protected override void WndProc(ref Message m)
     {
+        // WM_NCHITTEST
         if (m.Msg == 0x84)
         {
+            // HTTRANSPARENT
             m.Result = new IntPtr(-1);
             return;
         }
@@ -179,7 +186,20 @@ New-Item `
     Out-Null
 
 # ============================================================
-# LOG
+# CLEAN OLD OUTPUTS
+# ============================================================
+
+Remove-Item `
+    $videoPath,
+    $screenshotPath,
+    $logFile,
+    $ffmpegOut,
+    $ffmpegErr `
+    -Force `
+    -ErrorAction SilentlyContinue
+
+# ============================================================
+# LOG FUNCTION
 # ============================================================
 
 function Log {
@@ -206,6 +226,10 @@ $ffmpegProcess = $null
 $redCircle = $null
 
 try {
+
+    # ========================================================
+    # START
+    # ========================================================
 
     Log "========================================"
     Log "RDP RECORDING STARTED"
@@ -490,7 +514,7 @@ try {
     Log "FFmpeg PID: $($ffmpegProcess.Id)"
 
     # ========================================================
-    # RECORD BEFORE CLICK
+    # RECORD 5 SECONDS BEFORE CLICK
     # ========================================================
 
     Log "Recording 5 seconds before click..."
@@ -612,22 +636,78 @@ try {
 
         $ffmpegProcess.WaitForExit()
 
-        Log "FFmpeg exit code: $($ffmpegProcess.ExitCode)"
+        $ffmpegProcess.Refresh()
 
-        if ($ffmpegProcess.ExitCode -ne 0) {
+        Start-Sleep -Milliseconds 500
 
-            Log "=== FFMPEG ERROR ==="
+        $ffmpegExited =
+            $ffmpegProcess.HasExited
 
-            if (Test-Path $ffmpegErr) {
+        Log "FFmpeg HasExited: $ffmpegExited"
 
-                Get-Content $ffmpegErr |
-                    ForEach-Object {
-                        Log $_
-                    }
+        # ----------------------------------------------------
+        # IMPORTANT:
+        # ExitCode can be unavailable/empty in this situation.
+        # The actual output file is therefore also checked.
+        # ----------------------------------------------------
+
+        if ($ffmpegExited) {
+
+            try {
+
+                $exitCode =
+                    $ffmpegProcess.ExitCode
+
+                Log "FFmpeg exit code: $exitCode"
+
+            }
+            catch {
+
+                Log "Could not read FFmpeg exit code:"
+                Log $_.Exception.Message
+
+                $exitCode = $null
             }
 
-            throw `
-                "FFmpeg failed with exit code $($ffmpegProcess.ExitCode)."
+        }
+        else {
+
+            Log "FFmpeg is still running."
+
+            try {
+
+                Stop-Process `
+                    -Id $ffmpegProcess.Id `
+                    -Force `
+                    -ErrorAction SilentlyContinue
+
+                Start-Sleep -Milliseconds 500
+
+            }
+            catch {}
+
+            $exitCode = $null
+        }
+
+        # ----------------------------------------------------
+        # SHOW FFmpeg error log
+        # ----------------------------------------------------
+
+        if (Test-Path $ffmpegErr) {
+
+            $ffmpegErrorContent =
+                Get-Content `
+                    $ffmpegErr `
+                    -ErrorAction SilentlyContinue
+
+            if ($ffmpegErrorContent) {
+
+                Log "=== FFMPEG STDERR ==="
+
+                foreach ($line in $ffmpegErrorContent) {
+                    Log $line
+                }
+            }
         }
     }
 
@@ -638,7 +718,9 @@ try {
     Log "Checking video..."
 
     if (-not (Test-Path $videoPath)) {
-        throw "Video was not created: $videoPath"
+
+        throw `
+            "Video was not created: $videoPath"
     }
 
     $videoInfo =
@@ -647,8 +729,12 @@ try {
     Log "Video size: $($videoInfo.Length) bytes"
 
     if ($videoInfo.Length -lt 10000) {
-        throw "Video file is suspiciously small."
+
+        throw `
+            "Video file is suspiciously small."
     }
+
+    Log "Video verification: OK"
 
     # ========================================================
     # VERIFY SCREENSHOT
@@ -657,13 +743,23 @@ try {
     Log "Checking screenshot..."
 
     if (-not (Test-Path $screenshotPath)) {
-        throw "Screenshot was not created: $screenshotPath"
+
+        throw `
+            "Screenshot was not created: $screenshotPath"
     }
 
     $screenshotInfo =
         Get-Item $screenshotPath
 
     Log "Screenshot size: $($screenshotInfo.Length) bytes"
+
+    if ($screenshotInfo.Length -lt 1000) {
+
+        throw `
+            "Screenshot file is suspiciously small."
+    }
+
+    Log "Screenshot verification: OK"
 
     # ========================================================
     # FFPROBE
@@ -686,9 +782,36 @@ try {
                 $videoPath 2>&1
 
         foreach ($line in $probe) {
+
             Log "FFPROBE: $line"
         }
     }
+
+    # ========================================================
+    # FINAL FILE LIST
+    # ========================================================
+
+    Log "========================================"
+    Log "FINAL FILES"
+    Log "========================================"
+
+    Get-ChildItem `
+        "C:\temp" `
+        -File `
+        -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.Name -in @(
+                "rdp-click-video.mp4",
+                "rdp-click-screenshot.png",
+                "click-record.log",
+                "ffmpeg-output.log",
+                "ffmpeg-error.log"
+            )
+        } |
+        ForEach-Object {
+
+            Log "$($_.Name) -> $($_.Length) bytes"
+        }
 
     # ========================================================
     # SUCCESS
@@ -708,14 +831,24 @@ catch {
 
     Log $_.Exception.ToString()
 
+    # ========================================================
+    # REMOVE CIRCLE
+    # ========================================================
+
     if ($redCircle) {
 
         try {
+
             $redCircle.Close()
             $redCircle.Dispose()
+
         }
         catch {}
     }
+
+    # ========================================================
+    # STOP FFMPEG
+    # ========================================================
 
     if ($ffmpegProcess) {
 
@@ -735,15 +868,26 @@ catch {
         catch {}
     }
 
+    # ========================================================
+    # SHOW FFMPEG ERROR
+    # ========================================================
+
     if (Test-Path $ffmpegErr) {
 
         Log "=== FFMPEG ERROR LOG ==="
 
-        Get-Content $ffmpegErr |
+        Get-Content `
+            $ffmpegErr `
+            -ErrorAction SilentlyContinue |
             ForEach-Object {
+
                 Log $_
             }
     }
+
+    # ========================================================
+    # FILES AFTER FAILURE
+    # ========================================================
 
     Log "========================================"
     Log "FILES PRESENT AFTER FAILURE"
