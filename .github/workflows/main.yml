@@ -9,10 +9,9 @@ jobs:
     timeout-minutes: 15
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      # ============================================================
-      # 1. CONFIGURE RDP
-      # ============================================================
       - name: Configure RDP
         shell: powershell
         run: |
@@ -20,16 +19,13 @@ jobs:
 
           $username = "runneradmin"
           $password = "WindowsRDP#2025"
-
           $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
 
           try {
               Get-LocalUser -Name $username -ErrorAction Stop | Out-Null
-              Write-Host "User already exists."
               Set-LocalUser -Name $username -Password $securePassword
           }
           catch {
-              Write-Host "Creating user..."
               New-LocalUser `
                 -Name $username `
                 -Password $securePassword `
@@ -37,8 +33,15 @@ jobs:
                 -UserMayNotChangePassword
           }
 
-          Add-LocalGroupMember -Group "Administrators" -Member $username -ErrorAction SilentlyContinue
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username -ErrorAction SilentlyContinue
+          Add-LocalGroupMember `
+            -Group "Administrators" `
+            -Member $username `
+            -ErrorAction SilentlyContinue
+
+          Add-LocalGroupMember `
+            -Group "Remote Desktop Users" `
+            -Member $username `
+            -ErrorAction SilentlyContinue
 
           Set-ItemProperty `
             -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
@@ -50,16 +53,15 @@ jobs:
             -Name "UserAuthentication" `
             -Value 0
 
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
+          Enable-NetFirewallRule `
+            -DisplayGroup "Remote Desktop" `
+            -ErrorAction SilentlyContinue
 
           Set-Service -Name TermService -StartupType Automatic
           Restart-Service -Name TermService -Force
 
           Write-Host "RDP configured."
 
-      # ============================================================
-      # 2. INSTALL TAILSCALE
-      # ============================================================
       - name: Install and Start Tailscale
         shell: powershell
         env:
@@ -70,8 +72,6 @@ jobs:
           $tailscaleExe = "C:\Program Files\Tailscale\tailscale.exe"
 
           if (-not (Test-Path $tailscaleExe)) {
-              Write-Host "Downloading Tailscale..."
-
               $installer = "$env:TEMP\tailscale-setup.exe"
 
               Invoke-WebRequest `
@@ -90,8 +90,6 @@ jobs:
               throw "Tailscale executable was not found."
           }
 
-          Write-Host "Starting Tailscale..."
-
           & $tailscaleExe up `
             --auth-key="$env:TAILSCALE_AUTH_KEY" `
             --hostname="github-actions-rdp-3" `
@@ -106,7 +104,6 @@ jobs:
           Write-Host "=== Tailscale Status ==="
           & $tailscaleExe status
 
-          Write-Host ""
           Write-Host "=== Tailscale IP ==="
 
           $tailscaleIP = & $tailscaleExe ip -4
@@ -117,24 +114,21 @@ jobs:
 
           Write-Host $tailscaleIP
 
-      # ============================================================
-      # 3. CHECK CHROME
-      # ============================================================
       - name: Check Chrome
         shell: powershell
         run: |
           Write-Host "=== Checking Chrome ==="
 
-          $chromePaths = @(
+          $paths = @(
               "C:\Program Files\Google\Chrome\Application\chrome.exe",
               "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
           )
 
           $chromePath = $null
 
-          foreach ($path in $chromePaths) {
-              if (Test-Path $path) {
-                  $chromePath = $path
+          foreach ($p in $paths) {
+              if (Test-Path $p) {
+                  $chromePath = $p
                   break
               }
           }
@@ -146,9 +140,9 @@ jobs:
 
               Start-Sleep -Seconds 5
 
-              foreach ($path in $chromePaths) {
-                  if (Test-Path $path) {
-                      $chromePath = $path
+              foreach ($p in $paths) {
+                  if (Test-Path $p) {
+                      $chromePath = $p
                       break
                   }
               }
@@ -158,76 +152,44 @@ jobs:
               throw "Chrome executable not found."
           }
 
-          Write-Host "Chrome found:"
-          Write-Host $chromePath
+          Write-Host "Chrome found: $chromePath"
 
-          "CHROME_PATH=$chromePath" | Out-File `
-            -FilePath "$env:GITHUB_ENV" `
-            -Encoding utf8
+          "CHROME_PATH=$chromePath" |
+            Out-File "$env:GITHUB_ENV" -Encoding utf8
 
-      # ============================================================
-      # 4. CREATE CHROME TASK
-      # ============================================================
       - name: Create Chrome Task
         shell: powershell
         run: |
           Write-Host "=== Creating Chrome task ==="
 
           $taskName = "OpenChromeAutomatically"
-          $chromePath = $env:CHROME_PATH
 
-          Write-Host "Chrome:"
-          Write-Host $chromePath
-
-          Write-Host ""
-          Write-Host "Removing old task if it exists..."
-
-          # IMPORTANT:
-          # Do NOT call schtasks.exe directly from a PowerShell
-          # assignment. cmd.exe prevents native command errors from
-          # terminating this PowerShell step.
-
-          $deleteOutput = & cmd.exe /c "schtasks.exe /delete /tn `"$taskName`" /f" 2>&1
+          $deleteOutput = & cmd.exe /c `
+            "schtasks.exe /delete /tn `"$taskName`" /f" 2>&1
 
           if ($deleteOutput) {
               Write-Host ($deleteOutput -join [Environment]::NewLine)
           }
 
-          Write-Host ""
-          Write-Host "Creating Chrome scheduled task..."
-
-          $createCommand = "schtasks.exe /create /tn `"$taskName`" /tr `"`"$chromePath`" --start-maximized --new-window https://github.com`" /sc ONLOGON /ru `"runneradmin`" /rp `"WindowsRDP#2025`" /it /f"
-
-          Write-Host $createCommand
+          $createCommand =
+            "schtasks.exe /create /tn `"$taskName`" /tr `"\"$env:CHROME_PATH\" --start-maximized --new-window https://github.com`" /sc ONLOGON /ru `"runneradmin`" /rp `"WindowsRDP#2025`" /it /f"
 
           $createOutput = & cmd.exe /c $createCommand 2>&1
-
-          $createExitCode = $LASTEXITCODE
+          $code = $LASTEXITCODE
 
           if ($createOutput) {
               Write-Host ($createOutput -join [Environment]::NewLine)
           }
 
-          if ($createExitCode -ne 0) {
-              throw "Failed to create Chrome scheduled task. Exit code: $createExitCode"
+          if ($code -ne 0) {
+              throw "Failed to create Chrome task. Exit code: $code"
           }
 
-          Write-Host ""
           Write-Host "Chrome task created successfully."
 
-          Write-Host ""
-          Write-Host "=== Chrome Task Info ==="
+          & cmd.exe /c `
+            "schtasks.exe /query /tn `"$taskName`" /fo LIST /v" 2>&1
 
-          & cmd.exe /c "schtasks.exe /query /tn `"$taskName`" /fo LIST /v" 2>&1
-
-          Write-Host ""
-          Write-Host "=== Existing Sessions ==="
-
-          quser
-
-      # ============================================================
-      # 5. START RDP SESSION
-      # ============================================================
       - name: Start RDP Session
         shell: powershell
         run: |
@@ -237,25 +199,16 @@ jobs:
             -FilePath "mstsc.exe" `
             -ArgumentList "/v:127.0.0.1 /f"
 
-          Write-Host "mstsc launched."
-
           Write-Host "Waiting 100 seconds for RDP session..."
 
           Start-Sleep -Seconds 100
 
-          Write-Host ""
           Write-Host "=== QUSER ==="
-
           quser
 
-          Write-Host ""
           Write-Host "=== QWINSTA ==="
-
           qwinsta
 
-      # ============================================================
-      # 6. START CHROME
-      # ============================================================
       - name: Start Chrome
         shell: powershell
         run: |
@@ -263,602 +216,65 @@ jobs:
 
           $taskName = "OpenChromeAutomatically"
 
-          $runOutput = & cmd.exe /c "schtasks.exe /run /tn `"$taskName`"" 2>&1
+          $runOutput = & cmd.exe /c `
+            "schtasks.exe /run /tn `"$taskName`"" 2>&1
 
-          $runExitCode = $LASTEXITCODE
+          $code = $LASTEXITCODE
 
           if ($runOutput) {
               Write-Host ($runOutput -join [Environment]::NewLine)
           }
 
-          if ($runExitCode -ne 0) {
-              throw "Failed to start Chrome task. Exit code: $runExitCode"
+          if ($code -ne 0) {
+              throw "Failed to start Chrome task. Exit code: $code"
           }
 
           Write-Host "Chrome task started."
 
-          Write-Host "Waiting for Chrome..."
-
           Start-Sleep -Seconds 100
 
-          Write-Host ""
-          Write-Host "=== Chrome Processes ==="
+          Write-Host "=== Chrome processes ==="
 
           Get-Process chrome -ErrorAction SilentlyContinue |
             Select-Object Id, ProcessName, MainWindowTitle |
             Format-Table -AutoSize
 
-      # ============================================================
-      # 7. INSTALL FFMPEG
-      # ============================================================
       - name: Install FFmpeg
         shell: powershell
         run: |
           Write-Host "=== Installing FFmpeg ==="
 
           if (-not (Get-Command ffmpeg.exe -ErrorAction SilentlyContinue)) {
-
               choco install ffmpeg -y --no-progress
-
               Start-Sleep -Seconds 5
           }
 
-          $ffmpeg = Get-Command ffmpeg.exe -ErrorAction SilentlyContinue
-
-          if (-not $ffmpeg) {
+          if (-not (Get-Command ffmpeg.exe -ErrorAction SilentlyContinue)) {
               throw "FFmpeg was not found."
           }
 
-          Write-Host "FFmpeg:"
-          Write-Host $ffmpeg.Source
-
+          Write-Host "=== FFmpeg version ==="
           ffmpeg -version | Select-Object -First 3
 
-      # ============================================================
-      # 8. CREATE RECORDING POWERSHELL SCRIPT
-      # ============================================================
-      - name: Create Recording Script
+      - name: Install recording script
         shell: powershell
         run: |
-          Write-Host "=== Creating recording script ==="
-
-          New-Item -ItemType Directory -Path "C:\temp" -Force | Out-Null
-
-          $script = @'
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
-
-# ============================================================
-# WINDOW API
-# ============================================================
-
-Add-Type @"
-using System;
-using System.Text;
-using System.Runtime.InteropServices;
-
-public class WindowAPI
-{
-    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-
-    [DllImport("user32.dll")]
-    public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
-
-    [DllImport("user32.dll")]
-    public static extern bool IsWindowVisible(IntPtr hWnd);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    public static extern int GetWindowText(
-        IntPtr hWnd,
-        StringBuilder lpString,
-        int nMaxCount
-    );
-
-    [DllImport("user32.dll")]
-    public static extern uint GetWindowThreadProcessId(
-        IntPtr hWnd,
-        out uint lpdwProcessId
-    );
-
-    [DllImport("user32.dll")]
-    public static extern bool ShowWindow(
-        IntPtr hWnd,
-        int nCmdShow
-    );
-
-    [DllImport("user32.dll")]
-    public static extern bool SetForegroundWindow(
-        IntPtr hWnd
-    );
-
-    public const int SW_MINIMIZE = 6;
-    public const int SW_MAXIMIZE = 3;
-}
-"@
-
-# ============================================================
-# MOUSE API
-# ============================================================
-
-Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-
-public class MouseAPI
-{
-    [DllImport("user32.dll")]
-    public static extern bool SetCursorPos(
-        int X,
-        int Y
-    );
-
-    [DllImport("user32.dll")]
-    public static extern void mouse_event(
-        uint dwFlags,
-        uint dx,
-        uint dy,
-        uint dwData,
-        UIntPtr dwExtraInfo
-    );
-
-    public const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
-    public const uint MOUSEEVENTF_LEFTUP   = 0x0004;
-}
-"@
-
-# ============================================================
-# LOGGING
-# ============================================================
-
-$logFile = "C:\temp\click-record.log"
-
-function Log {
-    param(
-        [string]$Message
-    )
-
-    $line = "[{0}] {1}" -f `
-        (Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff"), `
-        $Message
-
-    Write-Host $line
-
-    Add-Content `
-        -Path $logFile `
-        -Value $line
-}
-
-Log "========================================"
-Log "Recording script started"
-Log "========================================"
-
-$ffmpegProcess = $null
-$redDot = $null
-
-try {
-
-    # ========================================================
-    # DETECT CHROME
-    # ========================================================
-
-    Log "Searching for Chrome processes..."
-
-    $chromeProcesses = Get-Process chrome -ErrorAction SilentlyContinue
-
-    if (-not $chromeProcesses) {
-        throw "Chrome process was not found."
-    }
-
-    $chromePids = @(
-        $chromeProcesses |
-        Select-Object -ExpandProperty Id
-    )
-
-    Log "Chrome PIDs: $($chromePids -join ', ')"
-
-    # ========================================================
-    # MINIMIZE OTHER WINDOWS
-    # ========================================================
-
-    Log "Enumerating windows..."
-
-    [WindowAPI]::EnumWindows(
-        {
-            param(
-                [IntPtr]$hWnd,
-                [IntPtr]$lParam
-            )
-
-            try {
-
-                if (-not [WindowAPI]::IsWindowVisible($hWnd)) {
-                    return $true
-                }
-
-                $titleBuilder = New-Object System.Text.StringBuilder 512
-
-                [WindowAPI]::GetWindowText(
-                    $hWnd,
-                    $titleBuilder,
-                    512
-                ) | Out-Null
-
-                $title = $titleBuilder.ToString()
-
-                if ([string]::IsNullOrWhiteSpace($title)) {
-                    return $true
-                }
-
-                [uint32]$windowProcessId = 0
-
-                [WindowAPI]::GetWindowThreadProcessId(
-                    $hWnd,
-                    [ref]$windowProcessId
-                ) | Out-Null
-
-                if ($chromePids -contains [int]$windowProcessId) {
-                    return $true
-                }
-
-                Log "Minimizing: $title"
-
-                [WindowAPI]::ShowWindow(
-                    $hWnd,
-                    [WindowAPI]::SW_MINIMIZE
-                ) | Out-Null
-
-            }
-            catch {
-                Log "Window enumeration error: $($_.Exception.Message)"
-            }
-
-            return $true
-        },
-        [IntPtr]::Zero
-    ) | Out-Null
-
-    # ========================================================
-    # FIND CHROME WINDOW
-    # ========================================================
-
-    $chromeWindow = [IntPtr]::Zero
-
-    [WindowAPI]::EnumWindows(
-        {
-            param(
-                [IntPtr]$hWnd,
-                [IntPtr]$lParam
-            )
-
-            if (-not [WindowAPI]::IsWindowVisible($hWnd)) {
-                return $true
-            }
-
-            [uint32]$windowProcessId = 0
-
-            [WindowAPI]::GetWindowThreadProcessId(
-                $hWnd,
-                [ref]$windowProcessId
-            ) | Out-Null
-
-            if ($chromePids -contains [int]$windowProcessId) {
-
-                $titleBuilder = New-Object System.Text.StringBuilder 512
-
-                [WindowAPI]::GetWindowText(
-                    $hWnd,
-                    $titleBuilder,
-                    512
-                ) | Out-Null
-
-                $title = $titleBuilder.ToString()
-
-                if (-not [string]::IsNullOrWhiteSpace($title)) {
-
-                    $script:chromeWindow = $hWnd
-
-                    Log "Chrome window found: $title"
-
-                    return $false
-                }
-            }
-
-            return $true
-        },
-        [IntPtr]::Zero
-    ) | Out-Null
-
-    if ($chromeWindow -eq [IntPtr]::Zero) {
-        throw "Chrome top-level window was not found."
-    }
-
-    # ========================================================
-    # BRING CHROME TO FRONT
-    # ========================================================
-
-    Log "Maximizing Chrome..."
-
-    [WindowAPI]::ShowWindow(
-        $chromeWindow,
-        [WindowAPI]::SW_MAXIMIZE
-    ) | Out-Null
-
-    Start-Sleep -Milliseconds 500
-
-    [WindowAPI]::SetForegroundWindow(
-        $chromeWindow
-    ) | Out-Null
-
-    Start-Sleep -Milliseconds 500
-
-    # ========================================================
-    # RED DOT
-    # ========================================================
-
-    Log "Creating red click marker..."
-
-    $redDot = New-Object System.Windows.Forms.Form
-
-    $redDot.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::None
-    $redDot.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual
-    $redDot.Location = New-Object System.Drawing.Point(79, 609)
-    $redDot.Size = New-Object System.Drawing.Size(10, 10)
-    $redDot.BackColor = [System.Drawing.Color]::Red
-    $redDot.TopMost = $true
-    $redDot.ShowInTaskbar = $false
-
-    $redDot.Show()
-
-    $redDot.Activate()
-
-    [System.Windows.Forms.Application]::DoEvents()
-
-    Log "Red dot center is exactly X=84 Y=614"
-
-    # ========================================================
-    # START FFMPEG
-    # ========================================================
-
-    $videoPath = "C:\temp\rdp-click-video.mp4"
-    $ffmpegOut = "C:\temp\ffmpeg-output.log"
-    $ffmpegErr = "C:\temp\ffmpeg-error.log"
-
-    Remove-Item $videoPath -Force -ErrorAction SilentlyContinue
-    Remove-Item $ffmpegOut -Force -ErrorAction SilentlyContinue
-    Remove-Item $ffmpegErr -Force -ErrorAction SilentlyContinue
-
-    Log "Starting FFmpeg..."
-
-    $ffmpegArgs = @(
-        "-y",
-        "-loglevel", "warning",
-        "-f", "gdigrab",
-        "-framerate", "10",
-        "-draw_mouse", "1",
-        "-i", "desktop",
-        "-t", "15",
-        "-c:v", "libx264",
-        "-preset", "ultrafast",
-        "-pix_fmt", "yuv420p",
-        "-movflags", "+faststart",
-        $videoPath
-    )
-
-    $ffmpegProcess = Start-Process `
-        -FilePath "ffmpeg.exe" `
-        -ArgumentList $ffmpegArgs `
-        -RedirectStandardOutput $ffmpegOut `
-        -RedirectStandardError $ffmpegErr `
-        -PassThru `
-        -WindowStyle Hidden
-
-    if (-not $ffmpegProcess) {
-        throw "Could not start FFmpeg."
-    }
-
-    Log "FFmpeg PID: $($ffmpegProcess.Id)"
-
-    # ========================================================
-    # WAIT 5 SECONDS
-    # ========================================================
-
-    Log "Recording started. Waiting 5 seconds..."
-
-    Start-Sleep -Seconds 5
-
-    # ========================================================
-    # EXACT CLICK 84,614
-    # ========================================================
-
-    Log "Moving cursor to X=84 Y=614..."
-
-    [MouseAPI]::SetCursorPos(
-        84,
-        614
-    ) | Out-Null
-
-    Start-Sleep -Milliseconds 250
-
-    Log "Performing left click..."
-
-    [MouseAPI]::mouse_event(
-        [MouseAPI]::MOUSEEVENTF_LEFTDOWN,
-        0,
-        0,
-        0,
-        [UIntPtr]::Zero
-    )
-
-    Start-Sleep -Milliseconds 80
-
-    [MouseAPI]::mouse_event(
-        [MouseAPI]::MOUSEEVENTF_LEFTUP,
-        0,
-        0,
-        0,
-        [UIntPtr]::Zero
-    )
-
-    Log "Click completed."
-
-    # ========================================================
-    # SCREENSHOT
-    # ========================================================
-
-    Start-Sleep -Milliseconds 500
-
-    Log "Taking screenshot..."
-
-    $screenBounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-
-    $bitmap = New-Object System.Drawing.Bitmap(
-        $screenBounds.Width,
-        $screenBounds.Height
-    )
-
-    $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-
-    $graphics.CopyFromScreen(
-        $screenBounds.Location,
-        [System.Drawing.Point]::Empty,
-        $screenBounds.Size
-    )
-
-    $screenshotPath = "C:\temp\rdp-click-screenshot.png"
-
-    $bitmap.Save(
-        $screenshotPath,
-        [System.Drawing.Imaging.ImageFormat]::Png
-    )
-
-    $graphics.Dispose()
-    $bitmap.Dispose()
-
-    Log "Screenshot saved: $screenshotPath"
-
-    # ========================================================
-    # CONTINUE RECORDING
-    # ========================================================
-
-    Log "Waiting remaining 10 seconds..."
-
-    Start-Sleep -Seconds 10
-
-    # ========================================================
-    # CLOSE RED DOT
-    # ========================================================
-
-    if ($redDot) {
-        Log "Closing red dot..."
-        $redDot.Close()
-        $redDot.Dispose()
-        $redDot = $null
-    }
-
-    # ========================================================
-    # WAIT FFMPEG
-    # ========================================================
-
-    Log "Waiting for FFmpeg..."
-
-    if ($ffmpegProcess) {
-
-        $ffmpegProcess.WaitForExit()
-
-        Log "FFmpeg exited with code: $($ffmpegProcess.ExitCode)"
-    }
-
-    # ========================================================
-    # VERIFY FILES
-    # ========================================================
-
-    if (-not (Test-Path $videoPath)) {
-        throw "Video file was not created."
-    }
-
-    $videoInfo = Get-Item $videoPath
-
-    Log "Video size: $($videoInfo.Length) bytes"
-
-    if ($videoInfo.Length -lt 10000) {
-        throw "Video file is suspiciously small."
-    }
-
-    if (-not (Test-Path $screenshotPath)) {
-        throw "Screenshot was not created."
-    }
-
-    $screenshotInfo = Get-Item $screenshotPath
-
-    Log "Screenshot size: $($screenshotInfo.Length) bytes"
-
-    # ========================================================
-    # FFPROBE
-    # ========================================================
-
-    Log "Running ffprobe..."
-
-    $ffprobeOutput = & ffprobe `
-        -v error `
-        -show_entries format=duration,size `
-        -of default=noprint_wrappers=1 `
-        $videoPath 2>&1
-
-    Add-Content `
-        -Path $logFile `
-        -Value ($ffprobeOutput -join [Environment]::NewLine)
-
-    Log "========================================"
-    Log "Recording completed successfully"
-    Log "========================================"
-
-    exit 0
-}
-catch {
-
-    Log "========================================"
-    Log "ERROR"
-    Log $_.Exception.Message
-    Log "========================================"
-
-    if ($redDot) {
-        try {
-            $redDot.Close()
-            $redDot.Dispose()
-        }
-        catch {}
-    }
-
-    if ($ffmpegProcess) {
-        try {
-            if (-not $ffmpegProcess.HasExited) {
-                Stop-Process `
-                    -Id $ffmpegProcess.Id `
-                    -Force `
-                    -ErrorAction SilentlyContinue
-            }
-        }
-        catch {}
-    }
-
-    exit 99
-}
-'@
-
-          Set-Content `
-            -Path "C:\temp\RDPClickAndRecord.ps1" `
-            -Value $script `
-            -Encoding UTF8
-
-          Write-Host "Recording script created."
-
-      # ============================================================
-      # 9. PARSE TEST
-      # ============================================================
-      - name: Validate Recording Script
-        shell: powershell
-        run: |
-          Write-Host "=== Validating PowerShell script ==="
+          Write-Host "=== Installing recording script ==="
+
+          New-Item `
+            -ItemType Directory `
+            -Path "C:\temp" `
+            -Force |
+            Out-Null
+
+          if (-not (Test-Path "scripts\record.ps1")) {
+              throw "scripts\record.ps1 was not found in repository."
+          }
+
+          Copy-Item `
+            "scripts\record.ps1" `
+            "C:\temp\RDPClickAndRecord.ps1" `
+            -Force
 
           $tokens = $null
           $errors = $null
@@ -870,44 +286,27 @@ catch {
           ) | Out-Null
 
           if ($errors.Count -gt 0) {
-
-              Write-Host "PowerShell parser errors:"
-
-              foreach ($errorItem in $errors) {
-                  Write-Host $errorItem.ToString()
+              foreach ($e in $errors) {
+                  Write-Host $e.ToString()
               }
 
-              throw "Recording script contains PowerShell syntax errors."
+              throw "Recording script syntax error."
           }
 
-          Write-Host "PowerShell parser: OK"
+          Write-Host "Recording script parser: OK"
 
-      # ============================================================
-      # 10. CREATE LAUNCHER
-      # ============================================================
-      - name: Create Recording Launcher
+      - name: Create recording launcher
         shell: powershell
         run: |
           Write-Host "=== Creating launcher ==="
 
-          $launcher = @'
-@echo off
-
-echo TASK STARTED > C:\temp\task-started.txt
-
-echo [%date% %time%] Launcher started >> C:\temp\task-launcher.log
-
-C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe ^
--NoProfile ^
--NonInteractive ^
--ExecutionPolicy Bypass ^
--File "C:\temp\RDPClickAndRecord.ps1" ^
->> C:\temp\task-powershell-output.log 2>&1
-
-echo [%date% %time%] PowerShell exit code: %ERRORLEVEL% >> C:\temp\task-launcher.log
-
-exit /b %ERRORLEVEL%
-'@
+          $launcher =
+            "@echo off`r`n" +
+            "echo TASK STARTED > C:\temp\task-started.txt`r`n" +
+            "echo [%date% %time%] Launcher started >> C:\temp\task-launcher.log`r`n" +
+            "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"C:\temp\RDPClickAndRecord.ps1`" >> C:\temp\task-powershell-output.log 2>&1`r`n" +
+            "echo [%date% %time%] PowerShell exit code: %ERRORLEVEL% >> C:\temp\task-launcher.log`r`n" +
+            "exit /b %ERRORLEVEL%"
 
           Set-Content `
             -Path "C:\temp\record-launcher.cmd" `
@@ -916,55 +315,40 @@ exit /b %ERRORLEVEL%
 
           Write-Host "Launcher created."
 
-      # ============================================================
-      # 11. CREATE RECORDING TASK
-      # ============================================================
-      - name: Create Recording Task
+      - name: Create recording task
         shell: powershell
         run: |
-          Write-Host "=== Creating recording scheduled task ==="
+          Write-Host "=== Creating recording task ==="
 
           $taskName = "RDPClickAndRecord"
 
-          Write-Host "Removing old recording task..."
-
-          $deleteOutput = & cmd.exe /c "schtasks.exe /delete /tn `"$taskName`" /f" 2>&1
+          $deleteOutput = & cmd.exe /c `
+            "schtasks.exe /delete /tn `"$taskName`" /f" 2>&1
 
           if ($deleteOutput) {
               Write-Host ($deleteOutput -join [Environment]::NewLine)
           }
 
-          Write-Host ""
-          Write-Host "Creating task..."
-
-          $createCommand = "schtasks.exe /create /tn `"$taskName`" /tr `"C:\temp\record-launcher.cmd`" /sc ONLOGON /ru `"runneradmin`" /rp `"WindowsRDP#2025`" /it /f"
-
-          Write-Host $createCommand
+          $createCommand =
+            "schtasks.exe /create /tn `"$taskName`" /tr `"C:\temp\record-launcher.cmd`" /sc ONLOGON /ru `"runneradmin`" /rp `"WindowsRDP#2025`" /it /f"
 
           $createOutput = & cmd.exe /c $createCommand 2>&1
-
-          $createExitCode = $LASTEXITCODE
+          $code = $LASTEXITCODE
 
           if ($createOutput) {
               Write-Host ($createOutput -join [Environment]::NewLine)
           }
 
-          if ($createExitCode -ne 0) {
-              throw "Failed to create recording task. Exit code: $createExitCode"
+          if ($code -ne 0) {
+              throw "Failed to create recording task. Exit code: $code"
           }
 
-          Write-Host ""
           Write-Host "Recording task created."
 
-          Write-Host ""
-          Write-Host "=== Recording Task Info ==="
+          & cmd.exe /c `
+            "schtasks.exe /query /tn `"$taskName`" /fo LIST /v" 2>&1
 
-          & cmd.exe /c "schtasks.exe /query /tn `"$taskName`" /fo LIST /v" 2>&1
-
-      # ============================================================
-      # 12. RUN RECORDING TASK
-      # ============================================================
-      - name: Run Recording Task
+      - name: Run recording task
         shell: powershell
         run: |
           Write-Host "=== Running recording task ==="
@@ -972,122 +356,89 @@ exit /b %ERRORLEVEL%
           $taskName = "RDPClickAndRecord"
 
           Remove-Item `
-            "C:\temp\task-started.txt" `
-            -Force `
-            -ErrorAction SilentlyContinue
-
-          Remove-Item `
-            "C:\temp\task-launcher.log" `
-            -Force `
-            -ErrorAction SilentlyContinue
-
-          Remove-Item `
-            "C:\temp\task-powershell-output.log" `
-            -Force `
-            -ErrorAction SilentlyContinue
-
-          Remove-Item `
+            "C:\temp\task-started.txt",
+            "C:\temp\task-launcher.log",
+            "C:\temp\task-powershell-output.log",
             "C:\temp\click-record.log" `
             -Force `
             -ErrorAction SilentlyContinue
 
-          Write-Host "Starting task..."
+          $runOutput = & cmd.exe /c `
+            "schtasks.exe /run /tn `"$taskName`"" 2>&1
 
-          $runOutput = & cmd.exe /c "schtasks.exe /run /tn `"$taskName`"" 2>&1
-
-          $runExitCode = $LASTEXITCODE
+          $code = $LASTEXITCODE
 
           if ($runOutput) {
               Write-Host ($runOutput -join [Environment]::NewLine)
           }
 
-          if ($runExitCode -ne 0) {
-              throw "Could not start recording task. Exit code: $runExitCode"
+          if ($code -ne 0) {
+              throw "Could not start recording task. Exit code: $code"
           }
 
-          Write-Host "Task launched."
-
-          Write-Host "Waiting 25 seconds..."
+          Write-Host "Recording task started."
 
           Start-Sleep -Seconds 25
 
-          Write-Host ""
-          Write-Host "=== Task status ==="
+          Write-Host "=== Recording task status ==="
 
-          & cmd.exe /c "schtasks.exe /query /tn `"$taskName`" /fo LIST /v" 2>&1
+          & cmd.exe /c `
+            "schtasks.exe /query /tn `"$taskName`" /fo LIST /v" 2>&1
 
-          Write-Host ""
-          Write-Host "=== Files ==="
+          Write-Host "=== C:\temp ==="
 
           Get-ChildItem C:\temp -ErrorAction SilentlyContinue |
             Select-Object Name, Length, LastWriteTime |
             Sort-Object LastWriteTime -Descending |
             Format-Table -AutoSize
 
-      # ============================================================
-      # 13. CHECK OUTPUTS
-      # ============================================================
-      - name: Check Recording Outputs
+      - name: Debug outputs
         if: always()
         shell: powershell
         run: |
-          Write-Host "=== Checking recording outputs ==="
+          Write-Host "=== Debug outputs ==="
 
-          Write-Host ""
-          Write-Host "--- Screenshot ---"
+          $files = @(
+              "C:\temp\rdp-click-screenshot.png",
+              "C:\temp\rdp-click-video.mp4",
+              "C:\temp\click-record.log",
+              "C:\temp\task-started.txt",
+              "C:\temp\task-launcher.log",
+              "C:\temp\task-powershell-output.log",
+              "C:\temp\ffmpeg-output.log",
+              "C:\temp\ffmpeg-error.log"
+          )
 
-          if (Test-Path "C:\temp\rdp-click-screenshot.png") {
-              $file = Get-Item "C:\temp\rdp-click-screenshot.png"
-              Write-Host "FOUND"
-              Write-Host "Size: $($file.Length) bytes"
+          foreach ($p in $files) {
+              if (Test-Path $p) {
+                  $f = Get-Item $p
+                  Write-Host "FOUND $p ($($f.Length) bytes)"
+              }
+              else {
+                  Write-Host "NOT FOUND $p"
+              }
           }
-          else {
-              Write-Host "NOT FOUND"
-          }
-
-          Write-Host ""
-          Write-Host "--- Video ---"
-
-          if (Test-Path "C:\temp\rdp-click-video.mp4") {
-              $file = Get-Item "C:\temp\rdp-click-video.mp4"
-              Write-Host "FOUND"
-              Write-Host "Size: $($file.Length) bytes"
-          }
-          else {
-              Write-Host "NOT FOUND"
-          }
-
-          Write-Host ""
-          Write-Host "--- Click log ---"
 
           if (Test-Path "C:\temp\click-record.log") {
+              Write-Host "--- click-record.log ---"
               Get-Content "C:\temp\click-record.log"
           }
 
-          Write-Host ""
-          Write-Host "--- Launcher log ---"
-
           if (Test-Path "C:\temp\task-launcher.log") {
+              Write-Host "--- task-launcher.log ---"
               Get-Content "C:\temp\task-launcher.log"
           }
 
-          Write-Host ""
-          Write-Host "--- PowerShell output ---"
-
           if (Test-Path "C:\temp\task-powershell-output.log") {
+              Write-Host "--- task-powershell-output.log ---"
               Get-Content "C:\temp\task-powershell-output.log"
           }
 
-          Write-Host ""
-          Write-Host "--- FFmpeg error ---"
-
           if (Test-Path "C:\temp\ffmpeg-error.log") {
+              Write-Host "--- ffmpeg-error.log ---"
               Get-Content "C:\temp\ffmpeg-error.log"
           }
 
-      # ============================================================
-      # 14. UPLOAD SCREENSHOT
-      # ============================================================
       - name: Upload Screenshot
         if: always()
         uses: actions/upload-artifact@v4
@@ -1096,9 +447,6 @@ exit /b %ERRORLEVEL%
           path: C:\temp\rdp-click-screenshot.png
           if-no-files-found: warn
 
-      # ============================================================
-      # 15. UPLOAD VIDEO
-      # ============================================================
       - name: Upload Video
         if: always()
         uses: actions/upload-artifact@v4
@@ -1107,9 +455,6 @@ exit /b %ERRORLEVEL%
           path: C:\temp\rdp-click-video.mp4
           if-no-files-found: warn
 
-      # ============================================================
-      # 16. UPLOAD DEBUG LOGS
-      # ============================================================
       - name: Upload Debug Logs
         if: always()
         uses: actions/upload-artifact@v4
