@@ -494,7 +494,7 @@ jobs:
             "--start-maximized"
             "--new-window"
             "--user-data-dir=$chromeProfile"
-            "https://github.com"
+            "https://agentchain.noesisai.it/faucet?utm_source=chatgpt.com"
           )
 
           Write-Host "Chrome arguments:"
