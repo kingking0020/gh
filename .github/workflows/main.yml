@@ -746,7 +746,7 @@ jobs:
             # ------------------------------------------------------
             # URL را اینجا تغییر بده
             # ------------------------------------------------------
-            "https://github.com"
+            "https://agentchain.noesisai.it/faucet?utm_source=chatgpt.com"
           )
 
           Write-Host ""
