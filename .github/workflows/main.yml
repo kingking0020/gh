@@ -13,6 +13,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # ============================================================
+      # RDP
+      # ============================================================
       - name: Configure RDP
         shell: powershell
         run: |
@@ -58,11 +61,19 @@ jobs:
             -DisplayGroup "Remote Desktop" `
             -ErrorAction SilentlyContinue
 
-          Set-Service -Name TermService -StartupType Automatic
-          Restart-Service -Name TermService -Force
+          Set-Service `
+            -Name TermService `
+            -StartupType Automatic
+
+          Restart-Service `
+            -Name TermService `
+            -Force
 
           Write-Host "RDP configured."
 
+      # ============================================================
+      # TAILSCALE
+      # ============================================================
       - name: Install and Start Tailscale
         shell: powershell
         env:
@@ -117,6 +128,9 @@ jobs:
 
           Write-Host $tailscaleIP
 
+      # ============================================================
+      # CHROME
+      # ============================================================
       - name: Check Chrome
         shell: powershell
         run: |
@@ -161,6 +175,55 @@ jobs:
           "CHROME_PATH=$chromePath" |
             Out-File "$env:GITHUB_ENV" -Encoding utf8
 
+      # ============================================================
+      # DISABLE CHROME BROWSER SIGN-IN
+      # ============================================================
+      - name: Configure Chrome Sign-in
+        shell: powershell
+        run: |
+          Write-Host "=== Configuring Chrome sign-in policy ==="
+
+          $policyPath = "HKLM:\Software\Policies\Google\Chrome"
+
+          if (-not (Test-Path $policyPath)) {
+              New-Item `
+                -Path $policyPath `
+                -Force |
+                Out-Null
+          }
+
+          # 0 = Disable browser sign-in
+          New-ItemProperty `
+            -Path $policyPath `
+            -Name "BrowserSignin" `
+            -PropertyType DWord `
+            -Value 0 `
+            -Force |
+            Out-Null
+
+          # Prevent automatic first-run welcome UI
+          New-ItemProperty `
+            -Path $policyPath `
+            -Name "SyncDisabled" `
+            -PropertyType DWord `
+            -Value 1 `
+            -Force |
+            Out-Null
+
+          Write-Host "BrowserSignin = 0"
+          Write-Host "SyncDisabled = 1"
+
+          Write-Host ""
+          Write-Host "=== Chrome policies ==="
+
+          Get-ItemProperty `
+            -Path $policyPath |
+            Select-Object BrowserSignin, SyncDisabled |
+            Format-List
+
+      # ============================================================
+      # CHROME TASK
+      # ============================================================
       - name: Create Chrome Task
         shell: powershell
         run: |
@@ -168,6 +231,7 @@ jobs:
 
           $taskName = "OpenChromeAutomatically"
           $chromePath = $env:CHROME_PATH
+          $chromeProfile = "C:\temp\ChromeProfile"
 
           if (-not $chromePath) {
               throw "CHROME_PATH is empty."
@@ -177,9 +241,22 @@ jobs:
               throw "Chrome executable not found: $chromePath"
           }
 
-          Write-Host "Chrome path:"
-          Write-Host $chromePath
+          New-Item `
+            -ItemType Directory `
+            -Path $chromeProfile `
+            -Force |
+            Out-Null
 
+          # Remove previous Chrome process if somehow present
+          Get-Process chrome `
+            -ErrorAction SilentlyContinue |
+            Stop-Process `
+              -Force `
+              -ErrorAction SilentlyContinue
+
+          Start-Sleep -Seconds 2
+
+          # Remove old scheduled task
           $oldTask = Get-ScheduledTask `
             -TaskName $taskName `
             -ErrorAction SilentlyContinue
@@ -194,16 +271,28 @@ jobs:
                 -ErrorAction SilentlyContinue
           }
 
+          # IMPORTANT:
+          # BrowserSignin=0 prevents the Chrome browser sign-in prompt.
+          #
+          # --no-first-run skips Chrome's normal first-run flow.
+          # --no-default-browser-check avoids default-browser prompts.
+          # Dedicated profile keeps this runner's browser state isolated.
+
+          $arguments = `
+            "--no-first-run " +
+            "--no-default-browser-check " +
+            "--start-maximized " +
+            "--new-window " +
+            "--user-data-dir=`"$chromeProfile`" " +
+            "https://github.com"
+
           $action = New-ScheduledTaskAction `
             -Execute $chromePath `
-            -Argument '--start-maximized --new-window https://github.com'
+            -Argument $arguments
 
           $trigger = New-ScheduledTaskTrigger `
             -AtLogOn `
             -User "runneradmin"
-
-          # IMPORTANT:
-          # Windows PowerShell uses "Interactive", not "InteractiveToken".
 
           $principal = New-ScheduledTaskPrincipal `
             -UserId "runneradmin" `
@@ -233,6 +322,16 @@ jobs:
             -TaskName $taskName |
             Format-List TaskName, State, TaskPath
 
+          Write-Host ""
+          Write-Host "=== Chrome Arguments ==="
+
+          (Get-ScheduledTask `
+            -TaskName $taskName).Actions |
+            Format-List *
+
+      # ============================================================
+      # RDP SESSION
+      # ============================================================
       - name: Start RDP Session
         shell: powershell
         run: |
@@ -254,6 +353,9 @@ jobs:
           Write-Host "=== QWINSTA ==="
           qwinsta
 
+      # ============================================================
+      # START CHROME
+      # ============================================================
       - name: Start Chrome
         shell: powershell
         run: |
@@ -274,6 +376,8 @@ jobs:
 
           Write-Host "Chrome task started."
 
+          Write-Host "Waiting for Chrome..."
+
           Start-Sleep -Seconds 15
 
           Write-Host ""
@@ -293,6 +397,9 @@ jobs:
               Write-Host "Chrome process not found."
           }
 
+      # ============================================================
+      # FFMPEG
+      # ============================================================
       - name: Install FFmpeg
         shell: powershell
         run: |
@@ -312,6 +419,9 @@ jobs:
           Write-Host "=== FFmpeg ==="
           ffmpeg -version | Select-Object -First 3
 
+      # ============================================================
+      # RECORDING SCRIPT
+      # ============================================================
       - name: Install recording script
         shell: powershell
         run: |
@@ -354,6 +464,9 @@ jobs:
 
           Write-Host "Recording script parser: OK"
 
+      # ============================================================
+      # LAUNCHER
+      # ============================================================
       - name: Create recording launcher
         shell: powershell
         run: |
@@ -374,6 +487,9 @@ jobs:
 
           Write-Host "Launcher created."
 
+      # ============================================================
+      # RECORDING TASK
+      # ============================================================
       - name: Create recording task
         shell: powershell
         run: |
@@ -408,9 +524,6 @@ jobs:
             -AtLogOn `
             -User "runneradmin"
 
-          # IMPORTANT:
-          # Use Interactive here as well.
-
           $principal = New-ScheduledTaskPrincipal `
             -UserId "runneradmin" `
             -LogonType Interactive `
@@ -436,6 +549,9 @@ jobs:
             -TaskName $taskName |
             Format-List TaskName, State, TaskPath
 
+      # ============================================================
+      # RUN RECORDING
+      # ============================================================
       - name: Run recording task
         shell: powershell
         run: |
@@ -486,6 +602,9 @@ jobs:
             Sort-Object LastWriteTime -Descending |
             Format-Table -AutoSize
 
+      # ============================================================
+      # DEBUG
+      # ============================================================
       - name: Debug outputs
         if: always()
         shell: powershell
@@ -539,6 +658,9 @@ jobs:
               Get-Content "C:\temp\ffmpeg-error.log"
           }
 
+      # ============================================================
+      # ARTIFACTS
+      # ============================================================
       - name: Upload Screenshot
         if: always()
         uses: actions/upload-artifact@v4
