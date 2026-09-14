@@ -11,14 +11,15 @@ jobs:
     env:
       RDP_USERNAME: runneradmin
 
-      # ============================================================
-      # پسورد RDP را اینجا وارد کن
-      # ============================================================
+      # ------------------------------------------------------------
+      # RDP PASSWORD
+      # ------------------------------------------------------------
+      # این مقدار را با پسورد خودت عوض کن.
       RDP_PASSWORD: "RdpAccess#2026X"
 
-      # ============================================================
-      # مختصات کلیک
-      # ============================================================
+      # ------------------------------------------------------------
+      # CLICK COORDINATES
+      # ------------------------------------------------------------
       CLICK_X: "84"
       CLICK_Y: "614"
 
@@ -38,6 +39,8 @@ jobs:
       - name: Show runner information
         shell: powershell
         run: |
+          $ErrorActionPreference = "Stop"
+
           Write-Host "=========================================="
           Write-Host "RUNNER INFORMATION"
           Write-Host "=========================================="
@@ -105,10 +108,6 @@ jobs:
           Write-Host "Username: $username"
           Write-Host "Password: $password"
 
-          # ==========================================================
-          # PASSWORD
-          # ==========================================================
-
           $securePassword = ConvertTo-SecureString `
             $password `
             -AsPlainText `
@@ -135,17 +134,13 @@ jobs:
                 -ErrorAction Stop
 
               try {
-
                   Set-LocalUser `
                     -Name $username `
                     -PasswordNeverExpires $true `
                     -ErrorAction Stop
-
               }
               catch {
-
                   Write-Host "PasswordNeverExpires update skipped."
-                  Write-Host $_.Exception.Message
               }
 
               Write-Host "Password updated successfully."
@@ -190,6 +185,7 @@ jobs:
                 -ErrorAction Stop
 
               Write-Host "Added to Administrators."
+
           }
           else {
 
@@ -219,6 +215,7 @@ jobs:
                 -ErrorAction Stop
 
               Write-Host "Added to Remote Desktop Users."
+
           }
           else {
 
@@ -238,7 +235,10 @@ jobs:
             -Value 0 `
             -Force
 
-          # NLA
+          # ==========================================================
+          # ENABLE NLA
+          # ==========================================================
+
           Set-ItemProperty `
             -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
             -Name "UserAuthentication" `
@@ -250,7 +250,7 @@ jobs:
           # ==========================================================
 
           Write-Host ""
-          Write-Host "Enabling Remote Desktop firewall rules..."
+          Write-Host "Enabling Remote Desktop firewall..."
 
           Get-NetFirewallRule `
             -DisplayGroup "Remote Desktop" `
@@ -355,7 +355,7 @@ jobs:
           }
 
           if (-not (Test-Path $tailscaleExe)) {
-              throw "Tailscale executable was not found."
+              throw "Tailscale executable not found."
           }
 
           Write-Host "Connecting Tailscale..."
@@ -571,12 +571,14 @@ jobs:
           Write-Host "=========================================="
 
       # ============================================================
-      # VERIFY DESKTOP
+      # VERIFY INTERACTIVE DESKTOP
       # ============================================================
 
       - name: Verify interactive desktop
         shell: powershell
         run: |
+
+          $ErrorActionPreference = "Stop"
 
           Write-Host "=========================================="
           Write-Host "VERIFYING DESKTOP"
@@ -619,7 +621,7 @@ jobs:
       # MINIMIZE EVERYTHING
       # ============================================================
 
-      - name: Minimize all existing windows
+      - name: Minimize all windows
         shell: powershell
         run: |
 
@@ -641,10 +643,12 @@ jobs:
           }
           catch {
 
-              Write-Host "MinimizeAll failed."
+              Write-Host "Shell MinimizeAll failed."
               Write-Host $_.Exception.Message
 
-              Write-Host "Using Win+D fallback..."
+              # ------------------------------------------------------
+              # Win+D fallback
+              # ------------------------------------------------------
 
               Add-Type @"
           using System;
@@ -661,6 +665,7 @@ jobs:
               );
 
               public const uint KEYEVENTF_KEYUP = 0x0002;
+
               public const byte VK_LWIN = 0x5B;
               public const byte VK_D = 0x44;
           }
@@ -693,11 +698,13 @@ jobs:
                   [DesktopShortcut]::KEYEVENTF_KEYUP,
                   [UIntPtr]::Zero
               )
+
+              Write-Host "Win+D fallback executed."
           }
 
           Start-Sleep -Seconds 2
 
-          Write-Host "Desktop is clean."
+          Write-Host "Desktop prepared."
 
       # ============================================================
       # START CHROME MAXIMIZED
@@ -736,9 +743,9 @@ jobs:
             "--new-window"
             "--user-data-dir=$chromeProfile"
 
-            # ======================================================
-            # URL
-            # ======================================================
+            # ------------------------------------------------------
+            # URL را اینجا تغییر بده
+            # ------------------------------------------------------
             "https://github.com"
           )
 
@@ -761,7 +768,7 @@ jobs:
           Start-Sleep -Seconds 8
 
           # ==========================================================
-          # FORCE MAXIMIZED + FOREGROUND
+          # CHROME WINDOW
           # ==========================================================
 
           Add-Type @"
@@ -815,18 +822,14 @@ jobs:
 
           Start-Sleep -Seconds 2
 
-          Write-Host "Chrome is maximized and in foreground."
-
-          # ==========================================================
-          # FINAL MAXIMIZE CHECK
-          # ==========================================================
-
           $chromeWindow.Refresh()
 
           Write-Host ""
-          Write-Host "Chrome Window:"
-          Write-Host "Title: $($chromeWindow.MainWindowTitle)"
-          Write-Host "Handle: $($chromeWindow.MainWindowHandle)"
+          Write-Host "Chrome title:"
+          Write-Host $chromeWindow.MainWindowTitle
+
+          Write-Host ""
+          Write-Host "Chrome is maximized and in foreground."
 
       # ============================================================
       # INSTALL FFMPEG
@@ -871,6 +874,8 @@ jobs:
               -ErrorAction SilentlyContinue
 
           if ($ffprobe) {
+
+              Write-Host ""
               Write-Host "FFprobe:"
               Write-Host $ffprobe.Source
           }
@@ -883,13 +888,19 @@ jobs:
         shell: powershell
         run: |
 
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "=========================================="
+          Write-Host "CREATING RECORDING SCRIPT"
+          Write-Host "=========================================="
+
           New-Item `
             -ItemType Directory `
             -Path "C:\temp" `
             -Force |
             Out-Null
 
-          @'
+          $recordingScript = @'
           $ErrorActionPreference = "Stop"
 
           $logFile =
@@ -1013,10 +1024,6 @@ jobs:
           Log "Screen Width = $width"
           Log "Screen Height = $height"
 
-          # ==========================================================
-          # VALIDATE COORDINATES
-          # ==========================================================
-
           if ($x -lt $screenX -or
               $x -ge ($screenX + $width)) {
 
@@ -1063,7 +1070,7 @@ jobs:
           Log "Chrome HWND = $($chromeWindow.MainWindowHandle)"
 
           # ==========================================================
-          # FORCE CHROME MAXIMIZED
+          # FORCE MAXIMIZED + FOREGROUND
           # ==========================================================
 
           [NativeMouse]::ShowWindow(
@@ -1089,7 +1096,7 @@ jobs:
           Log "Chrome maximized and activated."
 
           # ==========================================================
-          # CLEAN FILES
+          # CLEAN OLD OUTPUTS
           # ==========================================================
 
           Remove-Item `
@@ -1113,7 +1120,7 @@ jobs:
             -ErrorAction SilentlyContinue
 
           # ==========================================================
-          # START FFMPEG
+          # START 20 SECOND VIDEO
           # ==========================================================
 
           Log "Starting 20 second FFmpeg recording..."
@@ -1150,7 +1157,7 @@ jobs:
           Log "FFmpeg PID = $($ffmpegProcess.Id)"
 
           # ==========================================================
-          # 5 SECONDS BEFORE CLICK #1
+          # 0 -> 5 SECONDS
           # ==========================================================
 
           Log "Waiting 5 seconds before CLICK #1..."
@@ -1173,15 +1180,15 @@ jobs:
               Log "$Label"
               Log "=========================================="
 
-              Log "Moving mouse to X=$X Y=$Y"
+              Log "Moving cursor to X=$X Y=$Y"
 
-              $result =
+              $moveResult =
                   [NativeMouse]::SetCursorPos(
                       $X,
                       $Y
                   )
 
-              if (-not $result) {
+              if (-not $moveResult) {
                   throw "SetCursorPos failed."
               }
 
@@ -1194,9 +1201,9 @@ jobs:
               Log "X=$($cursor.X)"
               Log "Y=$($cursor.Y)"
 
-              # -------------------------------------------------------
+              # ------------------------------------------------------
               # LEFT DOWN
-              # -------------------------------------------------------
+              # ------------------------------------------------------
 
               [NativeMouse]::mouse_event(
                   [NativeMouse]::MOUSEEVENTF_LEFTDOWN,
@@ -1208,9 +1215,9 @@ jobs:
 
               Start-Sleep -Milliseconds 150
 
-              # -------------------------------------------------------
+              # ------------------------------------------------------
               # LEFT UP
-              # -------------------------------------------------------
+              # ------------------------------------------------------
 
               [NativeMouse]::mouse_event(
                   [NativeMouse]::MOUSEEVENTF_LEFTUP,
@@ -1224,7 +1231,7 @@ jobs:
           }
 
           # ==========================================================
-          # CLICK #1
+          # CLICK #1 AT 5 SECONDS
           # ==========================================================
 
           Perform-Click `
@@ -1233,7 +1240,7 @@ jobs:
             -Label "CLICK #1"
 
           # ==========================================================
-          # WAIT 5 SECONDS
+          # 5 -> 10 SECONDS
           # ==========================================================
 
           Log "Waiting 5 seconds after CLICK #1..."
@@ -1241,7 +1248,7 @@ jobs:
           Start-Sleep -Seconds 5
 
           # ==========================================================
-          # CLICK #2
+          # CLICK #2 AT 10 SECONDS
           # ==========================================================
 
           Perform-Click `
@@ -1250,7 +1257,7 @@ jobs:
             -Label "CLICK #2"
 
           # ==========================================================
-          # WAIT 10 SECONDS
+          # 10 -> 20 SECONDS
           # ==========================================================
 
           Log "Waiting 10 seconds after CLICK #2..."
@@ -1258,7 +1265,7 @@ jobs:
           Start-Sleep -Seconds 10
 
           # ==========================================================
-          # WAIT FOR FFMPEG
+          # WAIT FOR VIDEO TO FINISH
           # ==========================================================
 
           Log "Waiting for FFmpeg to finish..."
@@ -1270,7 +1277,7 @@ jobs:
           Log "FFmpeg exit code = $($ffmpegProcess.ExitCode)"
 
           # ==========================================================
-          # VIDEO MUST END BEFORE SCREENSHOT
+          # VALIDATE VIDEO
           # ==========================================================
 
           if (-not (Test-Path $videoFile)) {
@@ -1283,11 +1290,11 @@ jobs:
           Log "Video size = $videoSize bytes"
 
           if ($videoSize -le 1000) {
-              throw "Video file is too small."
+              throw "Video is too small."
           }
 
           # ==========================================================
-          # FINAL SCREENSHOT AFTER VIDEO END
+          # FINAL SCREENSHOT AFTER VIDEO ENDS
           # ==========================================================
 
           Log "=========================================="
@@ -1363,7 +1370,7 @@ jobs:
           Log "Final screenshot saved."
 
           # ==========================================================
-          # SCREENSHOT VALIDATION
+          # VALIDATE SCREENSHOT
           # ==========================================================
 
           if (-not (Test-Path $screenshotFile)) {
@@ -1376,7 +1383,7 @@ jobs:
           Log "Screenshot size = $screenshotSize bytes"
 
           if ($screenshotSize -le 1000) {
-              throw "Screenshot file is too small."
+              throw "Screenshot is too small."
           }
 
           # ==========================================================
@@ -1402,6 +1409,47 @@ jobs:
           Log "=========================================="
           Log "ALL OPERATIONS COMPLETED"
           Log "=========================================="
+          '@
+
+          # ==========================================================
+          # WRITE SCRIPT
+          # ==========================================================
+
+          Set-Content `
+            -Path "C:\temp\RDPClickAndRecord.ps1" `
+            -Value $recordingScript `
+            -Encoding UTF8
+
+          Write-Host "Recording script created."
+
+          # ==========================================================
+          # VALIDATE SCRIPT SYNTAX
+          # ==========================================================
+
+          $tokens = $null
+          $errors = $null
+
+          [System.Management.Automation.Language.Parser]::ParseFile(
+              "C:\temp\RDPClickAndRecord.ps1",
+              [ref]$tokens,
+              [ref]$errors
+          ) | Out-Null
+
+          if ($errors.Count -gt 0) {
+
+              Write-Host ""
+              Write-Host "=========================================="
+              Write-Host "POWERSHELL PARSE ERRORS"
+              Write-Host "=========================================="
+
+              foreach ($errorItem in $errors) {
+                  Write-Host $errorItem.ToString()
+              }
+
+              throw "Recording script has PowerShell syntax errors."
+          }
+
+          Write-Host "Recording script syntax: OK."
 
       # ============================================================
       # RUN RECORDING
@@ -1417,7 +1465,7 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           Write-Host "=========================================="
-          Write-Host "RUNNING RECORDING"
+          Write-Host "STARTING RECORDING"
           Write-Host "=========================================="
 
           Write-Host "CLICK_X = $env:CLICK_X"
@@ -1446,7 +1494,7 @@ jobs:
           }
 
       # ============================================================
-      # DEBUG
+      # DEBUG OUTPUTS
       # ============================================================
 
       - name: Debug outputs
