@@ -26,36 +26,16 @@ jobs:
               Set-LocalUser -Name $username -Password $securePassword
           }
           catch {
-              New-LocalUser `
-                -Name $username `
-                -Password $securePassword `
-                -PasswordNeverExpires `
-                -UserMayNotChangePassword
+              New-LocalUser -Name $username -Password $securePassword -PasswordNeverExpires -UserMayNotChangePassword
           }
 
-          Add-LocalGroupMember `
-            -Group "Administrators" `
-            -Member $username `
-            -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Administrators" -Member $username -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username -ErrorAction SilentlyContinue
 
-          Add-LocalGroupMember `
-            -Group "Remote Desktop Users" `
-            -Member $username `
-            -ErrorAction SilentlyContinue
+          Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0
+          Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "UserAuthentication" -Value 0
 
-          Set-ItemProperty `
-            -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
-            -Name "fDenyTSConnections" `
-            -Value 0
-
-          Set-ItemProperty `
-            -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
-            -Name "UserAuthentication" `
-            -Value 0
-
-          Enable-NetFirewallRule `
-            -DisplayGroup "Remote Desktop" `
-            -ErrorAction SilentlyContinue
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
 
           Set-Service -Name TermService -StartupType Automatic
           Restart-Service -Name TermService -Force
@@ -78,11 +58,7 @@ jobs:
                 -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" `
                 -OutFile $installer
 
-              Start-Process `
-                -FilePath $installer `
-                -ArgumentList "/quiet" `
-                -Wait
-
+              Start-Process -FilePath $installer -ArgumentList "/quiet" -Wait
               Start-Sleep -Seconds 5
           }
 
@@ -90,10 +66,7 @@ jobs:
               throw "Tailscale executable was not found."
           }
 
-          & $tailscaleExe up `
-            --auth-key="$env:TAILSCALE_AUTH_KEY" `
-            --hostname="github-actions-rdp-3" `
-            --accept-dns=false
+          & $tailscaleExe up --auth-key="$env:TAILSCALE_AUTH_KEY" --hostname="github-actions-rdp-3" --accept-dns=false
 
           if ($LASTEXITCODE -ne 0) {
               throw "Tailscale failed to connect."
@@ -105,8 +78,7 @@ jobs:
           & $tailscaleExe status
 
           Write-Host "=== Tailscale IP ==="
-
-          $tailscaleIP = & $tailscaleExe ip -4
+          $tailscaleIP = (& $tailscaleExe ip -4 | Select-Object -First 1).Trim()
 
           if (-not $tailscaleIP) {
               throw "Could not obtain Tailscale IPv4 address."
@@ -135,9 +107,7 @@ jobs:
 
           if (-not $chromePath) {
               Write-Host "Chrome not found. Installing..."
-
               choco install googlechrome -y --no-progress
-
               Start-Sleep -Seconds 5
 
               foreach ($p in $paths) {
@@ -153,9 +123,7 @@ jobs:
           }
 
           Write-Host "Chrome found: $chromePath"
-
-          "CHROME_PATH=$chromePath" |
-            Out-File "$env:GITHUB_ENV" -Encoding utf8
+          "CHROME_PATH=$chromePath" | Out-File "$env:GITHUB_ENV" -Encoding utf8
 
       - name: Create Chrome Task
         shell: powershell
@@ -163,44 +131,65 @@ jobs:
           Write-Host "=== Creating Chrome task ==="
 
           $taskName = "OpenChromeAutomatically"
+          $chromePath = $env:CHROME_PATH
 
-          $deleteOutput = & cmd.exe /c `
-            "schtasks.exe /delete /tn `"$taskName`" /f" 2>&1
-
-          if ($deleteOutput) {
-              Write-Host ($deleteOutput -join [Environment]::NewLine)
+          if (-not $chromePath) {
+              throw "CHROME_PATH is empty."
           }
 
-          $createCommand =
-            "schtasks.exe /create /tn `"$taskName`" /tr `"\"$env:CHROME_PATH\" --start-maximized --new-window https://github.com`" /sc ONLOGON /ru `"runneradmin`" /rp `"WindowsRDP#2025`" /it /f"
-
-          $createOutput = & cmd.exe /c $createCommand 2>&1
-          $code = $LASTEXITCODE
-
-          if ($createOutput) {
-              Write-Host ($createOutput -join [Environment]::NewLine)
+          if (-not (Test-Path $chromePath)) {
+              throw "Chrome executable not found: $chromePath"
           }
 
-          if ($code -ne 0) {
-              throw "Failed to create Chrome task. Exit code: $code"
+          $oldTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+
+          if ($oldTask) {
+              Write-Host "Removing existing Chrome task..."
+              Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
           }
+
+          $action = New-ScheduledTaskAction `
+            -Execute $chromePath `
+            -Argument '--start-maximized --new-window https://github.com'
+
+          $trigger = New-ScheduledTaskTrigger `
+            -AtLogOn `
+            -User "runneradmin"
+
+          $principal = New-ScheduledTaskPrincipal `
+            -UserId "runneradmin" `
+            -LogonType InteractiveToken `
+            -RunLevel Highest
+
+          $settings = New-ScheduledTaskSettingsSet `
+            -AllowStartIfOnBatteries `
+            -DontStopIfGoingOnBatteries `
+            -StartWhenAvailable
+
+          Register-ScheduledTask `
+            -TaskName $taskName `
+            -Action $action `
+            -Trigger $trigger `
+            -Principal $principal `
+            -Settings $settings `
+            -Force | Out-Null
 
           Write-Host "Chrome task created successfully."
 
-          & cmd.exe /c `
-            "schtasks.exe /query /tn `"$taskName`" /fo LIST /v" 2>&1
+          Get-ScheduledTask -TaskName $taskName |
+            Format-List TaskName, State, TaskPath
+
+          (Get-ScheduledTask -TaskName $taskName).Actions |
+            Format-List Execute, Arguments
 
       - name: Start RDP Session
         shell: powershell
         run: |
           Write-Host "=== Starting RDP session ==="
 
-          Start-Process `
-            -FilePath "mstsc.exe" `
-            -ArgumentList "/v:127.0.0.1 /f"
+          Start-Process mstsc.exe -ArgumentList "/v:127.0.0.1 /f"
 
           Write-Host "Waiting 100 seconds for RDP session..."
-
           Start-Sleep -Seconds 100
 
           Write-Host "=== QUSER ==="
@@ -216,28 +205,29 @@ jobs:
 
           $taskName = "OpenChromeAutomatically"
 
-          $runOutput = & cmd.exe /c `
-            "schtasks.exe /run /tn `"$taskName`"" 2>&1
+          $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 
-          $code = $LASTEXITCODE
-
-          if ($runOutput) {
-              Write-Host ($runOutput -join [Environment]::NewLine)
+          if (-not $task) {
+              throw "Chrome scheduled task does not exist."
           }
 
-          if ($code -ne 0) {
-              throw "Failed to start Chrome task. Exit code: $code"
-          }
+          Start-ScheduledTask -TaskName $taskName
 
           Write-Host "Chrome task started."
+          Start-Sleep -Seconds 15
 
-          Start-Sleep -Seconds 100
+          Write-Host "=== Chrome Processes ==="
 
-          Write-Host "=== Chrome processes ==="
+          $chromeProcesses = Get-Process chrome -ErrorAction SilentlyContinue
 
-          Get-Process chrome -ErrorAction SilentlyContinue |
-            Select-Object Id, ProcessName, MainWindowTitle |
-            Format-Table -AutoSize
+          if ($chromeProcesses) {
+              $chromeProcesses |
+                Select-Object Id, ProcessName, MainWindowTitle |
+                Format-Table -AutoSize
+          }
+          else {
+              throw "Chrome process was not found after task start."
+          }
 
       - name: Install FFmpeg
         shell: powershell
@@ -253,7 +243,6 @@ jobs:
               throw "FFmpeg was not found."
           }
 
-          Write-Host "=== FFmpeg version ==="
           ffmpeg -version | Select-Object -First 3
 
       - name: Install recording script
@@ -261,20 +250,13 @@ jobs:
         run: |
           Write-Host "=== Installing recording script ==="
 
-          New-Item `
-            -ItemType Directory `
-            -Path "C:\temp" `
-            -Force |
-            Out-Null
+          New-Item -ItemType Directory -Path "C:\temp" -Force | Out-Null
 
           if (-not (Test-Path "scripts\record.ps1")) {
               throw "scripts\record.ps1 was not found in repository."
           }
 
-          Copy-Item `
-            "scripts\record.ps1" `
-            "C:\temp\RDPClickAndRecord.ps1" `
-            -Force
+          Copy-Item "scripts\record.ps1" "C:\temp\RDPClickAndRecord.ps1" -Force
 
           $tokens = $null
           $errors = $null
@@ -289,30 +271,26 @@ jobs:
               foreach ($e in $errors) {
                   Write-Host $e.ToString()
               }
-
-              throw "Recording script syntax error."
+              throw "Recording script contains PowerShell syntax errors."
           }
 
-          Write-Host "Recording script parser: OK"
+          Write-Host "PowerShell parser: OK"
 
       - name: Create recording launcher
         shell: powershell
         run: |
           Write-Host "=== Creating launcher ==="
 
-          $launcher =
-            "@echo off`r`n" +
-            "echo TASK STARTED > C:\temp\task-started.txt`r`n" +
-            "echo [%date% %time%] Launcher started >> C:\temp\task-launcher.log`r`n" +
-            "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"C:\temp\RDPClickAndRecord.ps1`" >> C:\temp\task-powershell-output.log 2>&1`r`n" +
-            "echo [%date% %time%] PowerShell exit code: %ERRORLEVEL% >> C:\temp\task-launcher.log`r`n" +
-            "exit /b %ERRORLEVEL%"
+          $launcher = @"
+          @echo off
+          echo TASK STARTED > C:\temp\task-started.txt
+          echo [%date% %time%] Launcher started >> C:\temp\task-launcher.log
+          C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "C:\temp\RDPClickAndRecord.ps1" >> C:\temp\task-powershell-output.log 2>&1
+          echo [%date% %time%] PowerShell exit code: %ERRORLEVEL% >> C:\temp\task-launcher.log
+          exit /b %ERRORLEVEL%
+          "@
 
-          Set-Content `
-            -Path "C:\temp\record-launcher.cmd" `
-            -Value $launcher `
-            -Encoding ASCII
-
+          Set-Content -Path "C:\temp\record-launcher.cmd" -Value $launcher.Trim() -Encoding ASCII
           Write-Host "Launcher created."
 
       - name: Create recording task
@@ -321,32 +299,49 @@ jobs:
           Write-Host "=== Creating recording task ==="
 
           $taskName = "RDPClickAndRecord"
+          $launcher = "C:\temp\record-launcher.cmd"
 
-          $deleteOutput = & cmd.exe /c `
-            "schtasks.exe /delete /tn `"$taskName`" /f" 2>&1
-
-          if ($deleteOutput) {
-              Write-Host ($deleteOutput -join [Environment]::NewLine)
+          if (-not (Test-Path $launcher)) {
+              throw "Recording launcher not found: $launcher"
           }
 
-          $createCommand =
-            "schtasks.exe /create /tn `"$taskName`" /tr `"C:\temp\record-launcher.cmd`" /sc ONLOGON /ru `"runneradmin`" /rp `"WindowsRDP#2025`" /it /f"
+          $oldTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 
-          $createOutput = & cmd.exe /c $createCommand 2>&1
-          $code = $LASTEXITCODE
-
-          if ($createOutput) {
-              Write-Host ($createOutput -join [Environment]::NewLine)
+          if ($oldTask) {
+              Write-Host "Removing existing recording task..."
+              Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
           }
 
-          if ($code -ne 0) {
-              throw "Failed to create recording task. Exit code: $code"
-          }
+          $action = New-ScheduledTaskAction `
+            -Execute "C:\Windows\System32\cmd.exe" `
+            -Argument "/c `"$launcher`""
 
-          Write-Host "Recording task created."
+          $trigger = New-ScheduledTaskTrigger `
+            -AtLogOn `
+            -User "runneradmin"
 
-          & cmd.exe /c `
-            "schtasks.exe /query /tn `"$taskName`" /fo LIST /v" 2>&1
+          $principal = New-ScheduledTaskPrincipal `
+            -UserId "runneradmin" `
+            -LogonType InteractiveToken `
+            -RunLevel Highest
+
+          $settings = New-ScheduledTaskSettingsSet `
+            -AllowStartIfOnBatteries `
+            -DontStopIfGoingOnBatteries `
+            -StartWhenAvailable
+
+          Register-ScheduledTask `
+            -TaskName $taskName `
+            -Action $action `
+            -Trigger $trigger `
+            -Principal $principal `
+            -Settings $settings `
+            -Force | Out-Null
+
+          Write-Host "Recording task created successfully."
+
+          Get-ScheduledTask -TaskName $taskName |
+            Format-List TaskName, State, TaskPath
 
       - name: Run recording task
         shell: powershell
@@ -356,38 +351,30 @@ jobs:
           $taskName = "RDPClickAndRecord"
 
           Remove-Item `
-            "C:\temp\task-started.txt",
-            "C:\temp\task-launcher.log",
-            "C:\temp\task-powershell-output.log",
+            "C:\temp\task-started.txt", `
+            "C:\temp\task-launcher.log", `
+            "C:\temp\task-powershell-output.log", `
             "C:\temp\click-record.log" `
-            -Force `
-            -ErrorAction SilentlyContinue
+            -Force -ErrorAction SilentlyContinue
 
-          $runOutput = & cmd.exe /c `
-            "schtasks.exe /run /tn `"$taskName`"" 2>&1
-
-          $code = $LASTEXITCODE
-
-          if ($runOutput) {
-              Write-Host ($runOutput -join [Environment]::NewLine)
+          if (-not (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue)) {
+              throw "Recording task does not exist."
           }
 
-          if ($code -ne 0) {
-              throw "Could not start recording task. Exit code: $code"
-          }
+          Start-ScheduledTask -TaskName $taskName
 
           Write-Host "Recording task started."
-
+          Write-Host "Waiting 25 seconds..."
           Start-Sleep -Seconds 25
 
           Write-Host "=== Recording task status ==="
 
-          & cmd.exe /c `
-            "schtasks.exe /query /tn `"$taskName`" /fo LIST /v" 2>&1
+          $info = Get-ScheduledTaskInfo -TaskName $taskName
+          $info | Format-List LastRunTime, LastTaskResult, NextRunTime
 
           Write-Host "=== C:\temp ==="
 
-          Get-ChildItem C:\temp -ErrorAction SilentlyContinue |
+          Get-ChildItem "C:\temp" -ErrorAction SilentlyContinue |
             Select-Object Name, Length, LastWriteTime |
             Sort-Object LastWriteTime -Descending |
             Format-Table -AutoSize
