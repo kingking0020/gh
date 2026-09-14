@@ -12,30 +12,14 @@ using System.Runtime.InteropServices;
 
 public class WindowAPI
 {
-    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-
     [DllImport("user32.dll")]
-    public static extern bool EnumWindows(
-        EnumWindowsProc lpEnumFunc,
-        IntPtr lParam
-    );
-
-    [DllImport("user32.dll")]
-    public static extern bool IsWindowVisible(
-        IntPtr hWnd
-    );
+    public static extern bool IsWindowVisible(IntPtr hWnd);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern int GetWindowText(
         IntPtr hWnd,
         StringBuilder lpString,
         int nMaxCount
-    );
-
-    [DllImport("user32.dll")]
-    public static extern uint GetWindowThreadProcessId(
-        IntPtr hWnd,
-        out uint lpdwProcessId
     );
 
     [DllImport("user32.dll")]
@@ -48,6 +32,9 @@ public class WindowAPI
     public static extern bool SetForegroundWindow(
         IntPtr hWnd
     );
+
+    [DllImport("user32.dll")]
+    public static extern bool IsWindow(IntPtr hWnd);
 
     public const int SW_MINIMIZE = 6;
     public const int SW_MAXIMIZE = 3;
@@ -85,7 +72,7 @@ public class MouseAPI
 "@
 
 # ============================================================
-# CLICK-THROUGH CIRCLE WINDOW
+# CLICK-THROUGH RED CIRCLE
 # ============================================================
 
 Add-Type @"
@@ -97,15 +84,18 @@ public class RedCircleForm : Form
 {
     public RedCircleForm()
     {
-        this.FormBorderStyle = FormBorderStyle.None;
-        this.StartPosition = FormStartPosition.Manual;
-        this.ShowInTaskbar = false;
-        this.TopMost = true;
-        this.BackColor = Color.Magenta;
-        this.TransparencyKey = Color.Magenta;
-        this.Width = 8;
-        this.Height = 8;
-        this.DoubleBuffered = true;
+        FormBorderStyle = FormBorderStyle.None;
+        StartPosition = FormStartPosition.Manual;
+        ShowInTaskbar = false;
+        TopMost = true;
+
+        BackColor = Color.Magenta;
+        TransparencyKey = Color.Magenta;
+
+        Width = 8;
+        Height = 8;
+
+        DoubleBuffered = true;
     }
 
     protected override CreateParams CreateParams
@@ -138,7 +128,6 @@ public class RedCircleForm : Form
     protected override void WndProc(ref Message m)
     {
         // WM_NCHITTEST
-        // HTTRANSPARENT
         if (m.Msg == 0x84)
         {
             m.Result = new IntPtr(-1);
@@ -152,17 +141,17 @@ public class RedCircleForm : Form
     {
         base.OnPaint(e);
 
+        e.Graphics.SmoothingMode =
+            System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+
         using (Brush brush = new SolidBrush(Color.Red))
         {
-            e.Graphics.SmoothingMode =
-                System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-
             e.Graphics.FillEllipse(
                 brush,
                 0,
                 0,
-                this.Width - 1,
-                this.Height - 1
+                Width - 1,
+                Height - 1
             );
         }
     }
@@ -170,10 +159,41 @@ public class RedCircleForm : Form
 "@
 
 # ============================================================
-# LOG
+# PATHS
 # ============================================================
 
-$logFile = "C:\temp\click-record.log"
+$workspace = $env:GITHUB_WORKSPACE
+
+if ([string]::IsNullOrWhiteSpace($workspace)) {
+    $workspace = (Get-Location).Path
+}
+
+$outputDir = Join-Path $workspace "rdp-output"
+
+New-Item `
+    -ItemType Directory `
+    -Path $outputDir `
+    -Force |
+    Out-Null
+
+$videoPath = Join-Path $outputDir "rdp-click-video.mp4"
+$screenshotPath = Join-Path $outputDir "rdp-click-screenshot.png"
+$clickLog = Join-Path $outputDir "click-record.log"
+$ffmpegOut = Join-Path $outputDir "ffmpeg-output.log"
+$ffmpegErr = Join-Path $outputDir "ffmpeg-error.log"
+
+Remove-Item `
+    $videoPath,
+    $screenshotPath,
+    $clickLog,
+    $ffmpegOut,
+    $ffmpegErr `
+    -Force `
+    -ErrorAction SilentlyContinue
+
+# ============================================================
+# LOGGING
+# ============================================================
 
 function Log {
     param(
@@ -181,13 +201,13 @@ function Log {
     )
 
     $line = "[{0}] {1}" -f `
-        (Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff"), `
+        (Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff"),
         $Message
 
     Write-Host $line
 
     Add-Content `
-        -Path $logFile `
+        -Path $clickLog `
         -Value $line
 }
 
@@ -200,179 +220,125 @@ $redCircle = $null
 
 try {
 
-    New-Item `
-        -ItemType Directory `
-        -Path "C:\temp" `
-        -Force |
-        Out-Null
+    Log "========================================"
+    Log "RDP RECORDING STARTED"
+    Log "========================================"
 
-    Log "========================================"
-    Log "RECORDING SCRIPT STARTED"
-    Log "========================================"
+    Log "Workspace: $workspace"
+    Log "Output directory: $outputDir"
+
+    # ========================================================
+    # CHECK SCREEN
+    # ========================================================
+
+    Log "Checking primary screen..."
+
+    $screen = [System.Windows.Forms.Screen]::PrimaryScreen
+
+    if ($null -eq $screen) {
+        throw "PrimaryScreen is null."
+    }
+
+    $screenBounds = $screen.Bounds
+
+    Log "Screen X=$($screenBounds.X)"
+    Log "Screen Y=$($screenBounds.Y)"
+    Log "Screen Width=$($screenBounds.Width)"
+    Log "Screen Height=$($screenBounds.Height)"
+
+    if ($screenBounds.Width -le 0 -or $screenBounds.Height -le 0) {
+        throw "Invalid screen dimensions."
+    }
 
     # ========================================================
     # FIND CHROME
     # ========================================================
 
-    $chromeProcesses =
+    Log "Searching for Chrome..."
+
+    $chromeProcesses = @(
         Get-Process chrome `
-        -ErrorAction SilentlyContinue
-
-    if (-not $chromeProcesses) {
-        throw "Chrome process was not found."
-    }
-
-    $chromePids = @(
-        $chromeProcesses |
-        Select-Object -ExpandProperty Id
+            -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.MainWindowHandle -ne [IntPtr]::Zero
+        }
     )
 
-    Log "Chrome process count: $($chromePids.Count)"
-
-    foreach ($chromePid in $chromePids) {
-        Log "Chrome PID: $chromePid"
+    if ($chromeProcesses.Count -eq 0) {
+        throw "Chrome with a visible top-level window was not found."
     }
 
-    # ========================================================
-    # MINIMIZE EVERYTHING EXCEPT CHROME
-    # ========================================================
+    Log "Chrome windows found: $($chromeProcesses.Count)"
 
-    Log "Minimizing non-Chrome windows..."
+    foreach ($p in $chromeProcesses) {
+        Log "Chrome PID=$($p.Id) Handle=$($p.MainWindowHandle)"
+    }
 
-    [WindowAPI]::EnumWindows(
-        {
-            param(
-                [IntPtr]$hWnd,
-                [IntPtr]$lParam
-            )
+    $chrome = $chromeProcesses |
+        Sort-Object StartTime -Descending |
+        Select-Object -First 1
 
-            try {
+    $chromeWindow = $chrome.MainWindowHandle
 
-                if (-not [WindowAPI]::IsWindowVisible($hWnd)) {
-                    return $true
-                }
+    if ($chromeWindow -eq [IntPtr]::Zero) {
+        throw "Chrome window handle is zero."
+    }
 
-                $titleBuilder =
-                    New-Object System.Text.StringBuilder 512
+    $titleBuilder =
+        New-Object System.Text.StringBuilder 1024
 
-                [WindowAPI]::GetWindowText(
-                    $hWnd,
-                    $titleBuilder,
-                    512
-                ) | Out-Null
-
-                $title =
-                    $titleBuilder.ToString()
-
-                if ([string]::IsNullOrWhiteSpace($title)) {
-                    return $true
-                }
-
-                [uint32]$windowProcessId = 0
-
-                [WindowAPI]::GetWindowThreadProcessId(
-                    $hWnd,
-                    [ref]$windowProcessId
-                ) | Out-Null
-
-                if (
-                    $chromePids -contains
-                    [int]$windowProcessId
-                ) {
-                    return $true
-                }
-
-                Log "Minimizing: $title"
-
-                [WindowAPI]::ShowWindow(
-                    $hWnd,
-                    [WindowAPI]::SW_MINIMIZE
-                ) | Out-Null
-
-            }
-            catch {
-
-                Log "Window error: $($_.Exception.Message)"
-            }
-
-            return $true
-
-        },
-        [IntPtr]::Zero
+    [WindowAPI]::GetWindowText(
+        $chromeWindow,
+        $titleBuilder,
+        1024
     ) | Out-Null
 
-    Start-Sleep -Seconds 1
+    $chromeTitle = $titleBuilder.ToString()
+
+    Log "Selected Chrome window: $chromeTitle"
+    Log "Chrome PID: $($chrome.Id)"
+    Log "Chrome Handle: $chromeWindow"
 
     # ========================================================
-    # FIND CHROME WINDOW
+    # MINIMIZE OTHER WINDOWS
     # ========================================================
 
-    $chromeWindow =
-        [IntPtr]::Zero
+    Log "Minimizing other applications..."
 
-    [WindowAPI]::EnumWindows(
-        {
-            param(
-                [IntPtr]$hWnd,
-                [IntPtr]$lParam
-            )
+    $allProcesses = Get-Process -ErrorAction SilentlyContinue
 
-            if (
-                -not
-                [WindowAPI]::IsWindowVisible($hWnd)
-            ) {
-                return $true
+    foreach ($proc in $allProcesses) {
+
+        try {
+
+            if ($proc.MainWindowHandle -eq [IntPtr]::Zero) {
+                continue
             }
 
-            [uint32]$windowProcessId = 0
+            if ($proc.Id -eq $chrome.Id) {
+                continue
+            }
 
-            [WindowAPI]::GetWindowThreadProcessId(
-                $hWnd,
-                [ref]$windowProcessId
+            $title = $proc.MainWindowTitle
+
+            if ([string]::IsNullOrWhiteSpace($title)) {
+                continue
+            }
+
+            Log "Minimizing: $title"
+
+            [WindowAPI]::ShowWindow(
+                $proc.MainWindowHandle,
+                [WindowAPI]::SW_MINIMIZE
             ) | Out-Null
 
-            if (
-                $chromePids -contains
-                [int]$windowProcessId
-            ) {
-
-                $titleBuilder =
-                    New-Object System.Text.StringBuilder 512
-
-                [WindowAPI]::GetWindowText(
-                    $hWnd,
-                    $titleBuilder,
-                    512
-                ) | Out-Null
-
-                $title =
-                    $titleBuilder.ToString()
-
-                if (
-                    -not
-                    [string]::IsNullOrWhiteSpace($title)
-                ) {
-
-                    $script:chromeWindow = $hWnd
-
-                    Log "Chrome window found: $title"
-
-                    return $false
-                }
-            }
-
-            return $true
-
-        },
-        [IntPtr]::Zero
-    ) | Out-Null
-
-    if (
-        $chromeWindow -eq
-        [IntPtr]::Zero
-    ) {
-        throw "Chrome top-level window was not found."
+        }
+        catch {
+            Log "Could not minimize PID=$($proc.Id): $($_.Exception.Message)"
+        }
     }
+
+    Start-Sleep -Seconds 1
 
     # ========================================================
     # MAXIMIZE CHROME
@@ -385,113 +351,113 @@ try {
         [WindowAPI]::SW_MAXIMIZE
     ) | Out-Null
 
-    Start-Sleep -Milliseconds 500
+    Start-Sleep -Milliseconds 700
 
     [WindowAPI]::SetForegroundWindow(
         $chromeWindow
     ) | Out-Null
 
-    Start-Sleep -Milliseconds 500
+    Start-Sleep -Milliseconds 700
+
+    [System.Windows.Forms.Application]::DoEvents()
 
     # ========================================================
-    # CREATE VERY SMALL RED CIRCLE
+    # RED CIRCLE
     # ========================================================
 
-    Log "Creating small red circle..."
+    Log "Creating red click marker..."
+
+    $circleSize = 8
+
+    $clickX = 84
+    $clickY = 614
+
+    $circleLeft = $clickX - [int]($circleSize / 2)
+    $circleTop  = $clickY - [int]($circleSize / 2)
 
     $redCircle =
         New-Object RedCircleForm
 
-    # --------------------------------------------------------
-    # Circle size
-    # --------------------------------------------------------
-    #
-    # 8x8 pixels
-    #
-    # Center = 84,614
-    #
-    # Left = 84 - 4 = 80
-    # Top  = 614 - 4 = 610
-    #
-    # --------------------------------------------------------
-
-    $redCircle.Width = 8
-    $redCircle.Height = 8
+    $redCircle.Width = $circleSize
+    $redCircle.Height = $circleSize
 
     $redCircle.Location =
         New-Object System.Drawing.Point(
-            80,
-            610
+            $circleLeft,
+            $circleTop
         )
 
     $redCircle.Show()
 
     [System.Windows.Forms.Application]::DoEvents()
 
-    Log "Small circular marker center = X=84 Y=614"
+    Log "Circle size: $circleSize x $circleSize"
+    Log "Circle center: X=$clickX Y=$clickY"
+    Log "Circle position: X=$circleLeft Y=$circleTop"
+
+    Start-Sleep -Milliseconds 500
 
     # ========================================================
-    # OUTPUT FILES
+    # FIND FFMPEG
     # ========================================================
 
-    $videoPath =
-        "C:\temp\rdp-click-video.mp4"
+    Log "Searching for FFmpeg..."
 
-    $screenshotPath =
-        "C:\temp\rdp-click-screenshot.png"
+    $ffmpegCommand =
+        Get-Command ffmpeg.exe `
+            -ErrorAction SilentlyContinue
 
-    $ffmpegOut =
-        "C:\temp\ffmpeg-output.log"
+    if ($null -eq $ffmpegCommand) {
+        throw "ffmpeg.exe was not found in PATH."
+    }
 
-    $ffmpegErr =
-        "C:\temp\ffmpeg-error.log"
+    $ffmpegPath = $ffmpegCommand.Source
 
-    Remove-Item `
-        $videoPath,
-        $screenshotPath,
-        $ffmpegOut,
-        $ffmpegErr `
-        -Force `
-        -ErrorAction SilentlyContinue
+    Log "FFmpeg path: $ffmpegPath"
 
     # ========================================================
-    # START FFMPEG
+    # START RECORDING
     # ========================================================
 
-    Log "Starting FFmpeg..."
+    Log "Starting FFmpeg desktop recording..."
 
     $ffmpegArgs = @(
         "-y"
         "-loglevel", "warning"
+
         "-f", "gdigrab"
         "-framerate", "10"
         "-draw_mouse", "1"
         "-i", "desktop"
+
         "-t", "15"
+
         "-c:v", "libx264"
         "-preset", "ultrafast"
         "-pix_fmt", "yuv420p"
+
         "-movflags", "+faststart"
+
         $videoPath
     )
 
     $ffmpegProcess =
         Start-Process `
-            -FilePath "ffmpeg.exe" `
+            -FilePath $ffmpegPath `
             -ArgumentList $ffmpegArgs `
             -RedirectStandardOutput $ffmpegOut `
             -RedirectStandardError $ffmpegErr `
             -PassThru `
             -WindowStyle Hidden
 
-    if (-not $ffmpegProcess) {
-        throw "FFmpeg failed to start."
+    if ($null -eq $ffmpegProcess) {
+        throw "FFmpeg process failed to start."
     }
 
     Log "FFmpeg PID: $($ffmpegProcess.Id)"
 
     # ========================================================
-    # 5 SECONDS BEFORE CLICK
+    # PRE-CLICK RECORDING
     # ========================================================
 
     Log "Recording 5 seconds before click..."
@@ -499,23 +465,26 @@ try {
     Start-Sleep -Seconds 5
 
     # ========================================================
-    # MOVE CURSOR
+    # MOVE MOUSE
     # ========================================================
 
-    Log "Moving mouse to X=84 Y=614..."
+    Log "Moving mouse to X=$clickX Y=$clickY..."
 
-    [MouseAPI]::SetCursorPos(
-        84,
-        614
-    ) | Out-Null
+    $mouseResult =
+        [MouseAPI]::SetCursorPos(
+            $clickX,
+            $clickY
+        )
 
-    Start-Sleep -Milliseconds 300
+    Log "SetCursorPos result: $mouseResult"
+
+    Start-Sleep -Milliseconds 500
 
     # ========================================================
     # CLICK
     # ========================================================
 
-    Log "Clicking X=84 Y=614..."
+    Log "Performing left click..."
 
     [MouseAPI]::mouse_event(
         [MouseAPI]::MOUSEEVENTF_LEFTDOWN,
@@ -525,7 +494,7 @@ try {
         [UIntPtr]::Zero
     )
 
-    Start-Sleep -Milliseconds 80
+    Start-Sleep -Milliseconds 100
 
     [MouseAPI]::mouse_event(
         [MouseAPI]::MOUSEEVENTF_LEFTUP,
@@ -535,18 +504,17 @@ try {
         [UIntPtr]::Zero
     )
 
-    Log "Click completed."
+    Log "CLICK COMPLETED."
 
     # ========================================================
-    # SCREENSHOT 0.5 SEC AFTER CLICK
+    # SCREENSHOT
     # ========================================================
 
     Start-Sleep -Milliseconds 500
 
-    Log "Taking screenshot..."
+    [System.Windows.Forms.Application]::DoEvents()
 
-    $screenBounds =
-        [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+    Log "Capturing screenshot..."
 
     $bitmap =
         New-Object System.Drawing.Bitmap(
@@ -573,18 +541,18 @@ try {
     $graphics.Dispose()
     $bitmap.Dispose()
 
-    Log "Screenshot saved."
+    Log "Screenshot saved: $screenshotPath"
 
     # ========================================================
-    # 10 SECONDS AFTER CLICK
+    # POST-CLICK RECORDING
     # ========================================================
 
-    Log "Continuing recording for 10 seconds..."
+    Log "Continuing recording..."
 
-    Start-Sleep -Seconds 10
+    Start-Sleep -Seconds 8
 
     # ========================================================
-    # REMOVE RED CIRCLE
+    # REMOVE CIRCLE
     # ========================================================
 
     if ($redCircle) {
@@ -592,10 +560,11 @@ try {
         Log "Removing red circle..."
 
         $redCircle.Close()
-
         $redCircle.Dispose()
 
         $redCircle = $null
+
+        [System.Windows.Forms.Application]::DoEvents()
     }
 
     # ========================================================
@@ -604,22 +573,19 @@ try {
 
     if ($ffmpegProcess) {
 
-        Log "Waiting for FFmpeg..."
+        Log "Waiting for FFmpeg to exit..."
 
         $ffmpegProcess.WaitForExit()
 
         Log "FFmpeg exit code: $($ffmpegProcess.ExitCode)"
 
-        if (
-            $ffmpegProcess.ExitCode -ne 0
-        ) {
+        if ($ffmpegProcess.ExitCode -ne 0) {
+
+            Log "=== FFMPEG STDERR ==="
 
             if (Test-Path $ffmpegErr) {
 
-                Log "=== FFMPEG ERROR ==="
-
-                Get-Content `
-                    $ffmpegErr |
+                Get-Content $ffmpegErr |
                     ForEach-Object {
                         Log $_
                     }
@@ -634,9 +600,10 @@ try {
     # VERIFY VIDEO
     # ========================================================
 
-    if (-not (Test-Path $videoPath)) {
+    Log "Checking video file..."
 
-        throw "Video file was not created."
+    if (-not (Test-Path $videoPath)) {
+        throw "Video file was not created: $videoPath"
     }
 
     $videoInfo =
@@ -645,7 +612,6 @@ try {
     Log "Video size: $($videoInfo.Length) bytes"
 
     if ($videoInfo.Length -lt 10000) {
-
         throw "Video file is suspiciously small."
     }
 
@@ -653,9 +619,10 @@ try {
     # VERIFY SCREENSHOT
     # ========================================================
 
-    if (-not (Test-Path $screenshotPath)) {
+    Log "Checking screenshot file..."
 
-        throw "Screenshot was not created."
+    if (-not (Test-Path $screenshotPath)) {
+        throw "Screenshot file was not created: $screenshotPath"
     }
 
     $screenshotInfo =
@@ -667,30 +634,50 @@ try {
     # FFPROBE
     # ========================================================
 
-    Log "Running ffprobe..."
+    $ffprobeCommand =
+        Get-Command ffprobe.exe `
+            -ErrorAction SilentlyContinue
 
-    $probe =
-        & ffprobe `
-            -v error `
-            -show_entries format=duration,size `
-            -show_entries stream=codec_name,width,height,pix_fmt `
-            -of default=noprint_wrappers=1 `
-            $videoPath 2>&1
+    if ($null -ne $ffprobeCommand) {
 
-    foreach ($line in $probe) {
-        Log "FFPROBE: $line"
+        Log "Running ffprobe..."
+
+        $probe =
+            & $ffprobeCommand.Source `
+                -v error `
+                -show_entries format=duration,size `
+                -show_entries stream=codec_name,width,height,pix_fmt `
+                -of default=noprint_wrappers=1 `
+                $videoPath 2>&1
+
+        foreach ($line in $probe) {
+            Log "FFPROBE: $line"
+        }
+    }
+    else {
+        Log "ffprobe.exe not found. Skipping ffprobe."
     }
 
     # ========================================================
-    # SUCCESS
+    # FINAL FILE LIST
     # ========================================================
+
+    Log "========================================"
+    Log "FINAL OUTPUT FILES"
+    Log "========================================"
+
+    Get-ChildItem `
+        -Path $outputDir `
+        -File |
+        ForEach-Object {
+            Log "$($_.Name) -> $($_.Length) bytes"
+        }
 
     Log "========================================"
     Log "RECORDING SUCCESS"
     Log "========================================"
 
     exit 0
-
 }
 catch {
 
@@ -699,6 +686,10 @@ catch {
     Log "========================================"
 
     Log $_.Exception.ToString()
+
+    # --------------------------------------------------------
+    # Remove circle
+    # --------------------------------------------------------
 
     if ($redCircle) {
 
@@ -709,11 +700,17 @@ catch {
         catch {}
     }
 
+    # --------------------------------------------------------
+    # Stop FFmpeg
+    # --------------------------------------------------------
+
     if ($ffmpegProcess) {
 
         try {
 
             if (-not $ffmpegProcess.HasExited) {
+
+                Log "Stopping FFmpeg..."
 
                 Stop-Process `
                     -Id $ffmpegProcess.Id `
@@ -724,6 +721,40 @@ catch {
         }
         catch {}
     }
+
+    # --------------------------------------------------------
+    # Save any available FFmpeg error
+    # --------------------------------------------------------
+
+    if (Test-Path $ffmpegErr) {
+
+        Log "=== FFMPEG ERROR LOG ==="
+
+        Get-Content $ffmpegErr |
+            ForEach-Object {
+                Log $_
+            }
+    }
+
+    # --------------------------------------------------------
+    # Save final directory state
+    # --------------------------------------------------------
+
+    try {
+
+        Log "========================================"
+        Log "FILES PRESENT AFTER FAILURE"
+        Log "========================================"
+
+        Get-ChildItem `
+            -Path $outputDir `
+            -File `
+            -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                Log "$($_.Name) -> $($_.Length) bytes"
+            }
+    }
+    catch {}
 
     exit 99
 }
