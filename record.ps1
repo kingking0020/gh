@@ -110,7 +110,7 @@ Log "CLICK COMPLETED."
 Log "Waiting 5 seconds after CLICK before typing..."
 Start-Sleep -Seconds 5
 
-$nanoAddress     = "nano_39zkq6o8tkqpmsg5f3csyzs4oy66sofuerbdyeagaxih5pzea3956q3619no"
+$nanoAddress     = "nano_1uh83gx7gqgqcx5q1n7kgxfob19ta4pqfkjst1q18474u1igjgbekwmwe1hd"
 $elementSelector = "address"
 
 Log "Connecting to Chrome DevTools..."
