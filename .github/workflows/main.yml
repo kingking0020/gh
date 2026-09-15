@@ -746,7 +746,7 @@ jobs:
             # ------------------------------------------------------
             # URL را اینجا تغییر بده
             # ------------------------------------------------------
-            "https://agentchain.noesisai.it/faucet?utm_source=chatgpt.com"
+            "https://nanswap.com/nano-faucet?utm_source=chatgpt.com"
           )
 
           Write-Host ""
