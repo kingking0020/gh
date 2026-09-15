@@ -18,8 +18,12 @@ using System.Runtime.InteropServices;
 public static class NativeWin {
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
+    [DllImport("user32.dll")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
     public const int SW_RESTORE = 9;
     public const int SW_MAXIMIZE = 3;
+    public const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
+    public const uint MOUSEEVENTF_LEFTUP   = 0x0004;
 }
 "@
 
@@ -79,12 +83,32 @@ $ffmpegArgs = @(
 $ffmpegProcess = Start-Process -FilePath "ffmpeg.exe" -ArgumentList $ffmpegArgs -PassThru -RedirectStandardOutput $ffmpegOutput -RedirectStandardError $ffmpegError
 Log "FFmpeg PID = $($ffmpegProcess.Id)"
 
-Log "Waiting 5 seconds before typing..."
+# ==========================================================
+# STEP 1: Wait 5 seconds, then PHYSICAL CLICK
+# ==========================================================
+
+$clickX = 84
+$clickY = 614
+
+Log "Waiting 5 seconds before CLICK..."
 Start-Sleep -Seconds 5
 
+Log "Moving cursor to X=$clickX Y=$clickY..."
+[NativeWin]::SetCursorPos($clickX, $clickY) | Out-Null
+Start-Sleep -Milliseconds 500
+
+Log "CLICKING..."
+[NativeWin]::mouse_event([NativeWin]::MOUSEEVENTF_LEFTDOWN, 0, 0, 0, [UIntPtr]::Zero)
+Start-Sleep -Milliseconds 150
+[NativeWin]::mouse_event([NativeWin]::MOUSEEVENTF_LEFTUP, 0, 0, 0, [UIntPtr]::Zero)
+Log "CLICK COMPLETED."
+
 # ==========================================================
-# TYPE INTO ELEMENT VIA CDP
+# STEP 2: Wait 5 seconds, then TYPE into #address via CDP
 # ==========================================================
+
+Log "Waiting 5 seconds after CLICK before typing..."
+Start-Sleep -Seconds 5
 
 $nanoAddress     = "nano_39zkq6o8tkqpmsg5f3csyzs4oy66sofuerbdyeagaxih5pzea3956q3619no"
 $elementSelector = "address"
@@ -138,10 +162,11 @@ $ws.CloseAsync([System.Net.WebSockets.WebSocketCloseStatus]::NormalClosure, "don
 $ws.Dispose()
 Log "Typing COMPLETED."
 
-Log "Waiting 10 more seconds..."
-Start-Sleep -Seconds 10
+# ==========================================================
+# STEP 3: Wait for recording to finish
+# ==========================================================
 
-Log "Waiting for FFmpeg..."
+Log "Waiting for FFmpeg to finish..."
 if (-not $ffmpegProcess.HasExited) { $ffmpegProcess.WaitForExit() }
 Log "FFmpeg exit code = $($ffmpegProcess.ExitCode)"
 
@@ -160,12 +185,9 @@ $graphics.CopyFromScreen($screenX, $screenY, 0, 0, $screen.Bounds.Size)
 $pen = New-Object System.Drawing.Pen([System.Drawing.Color]::Red, 3)
 $brush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(140, 255, 0, 0))
 
-$dotX = [int]($width / 2)
-$dotY = [int]($height / 2)
 $radius = 8
-
-$graphics.FillEllipse($brush, ($dotX - $radius), ($dotY - $radius), ($radius * 2), ($radius * 2))
-$graphics.DrawEllipse($pen, ($dotX - $radius), ($dotY - $radius), ($radius * 2), ($radius * 2))
+$graphics.FillEllipse($brush, ($clickX - $radius), ($clickY - $radius), ($radius * 2), ($radius * 2))
+$graphics.DrawEllipse($pen, ($clickX - $radius), ($clickY - $radius), ($radius * 2), ($radius * 2))
 
 $bitmap.Save($screenshotFile, [System.Drawing.Imaging.ImageFormat]::Png)
 
